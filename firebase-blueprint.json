@@ -1,0 +1,694 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Core SafeReach account profile with 10-character complex unique ID, admin-controlled subscription state, and zero phone PII.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "safeReachId": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^[A-Za-z0-9!@#$%^&*\\-_+=~]{10}$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "rolePreference": {
+          "type": "string",
+          "enum": ["traveler", "family", "both"]
+        },
+        "isSharingEnabled": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "idle",
+            "travelling",
+            "reached_safely",
+            "sos_alert",
+            "route_deviation",
+            "signal_stale"
+          ]
+        },
+        "subscriptionStatus": {
+          "type": "string",
+          "enum": ["pending", "active", "revoked"]
+        },
+        "accessGranted": {
+          "type": "boolean"
+        },
+        "subscriptionNote": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "ownerUid",
+        "safeReachId",
+        "displayName",
+        "rolePreference",
+        "isSharingEnabled",
+        "status",
+        "subscriptionStatus",
+        "accessGranted",
+        "subscriptionNote",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PrivateUserInfo": {
+      "title": "PrivateUserInfo",
+      "description": "Strictly owner-only private account settings (email and emergency contact label, zero phone numbers).",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "emergencyContactName": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 80
+        },
+        "defaultGeofenceRadiusMeters": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "ownerUid",
+        "email",
+        "emergencyContactName",
+        "defaultGeofenceRadiusMeters",
+        "updatedAt"
+      ]
+    },
+    "DirectoryEntry": {
+      "title": "DirectoryEntry",
+      "description": "Lookup mapping a 10-character complex Unique ID to an account ID without exposing PII, phone numbers, or location.",
+      "type": "object",
+      "properties": {
+        "safeReachId": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^[A-Za-z0-9!@#$%^&*\\-_+=~]{10}$"
+        },
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["safeReachId", "uid", "ownerUid", "displayName", "createdAt"]
+    },
+    "FamilyLink": {
+      "title": "FamilyLink",
+      "description": "Authorization contract between a traveler account and a trusted family tracker account.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 260,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "travelerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "travelerOwnerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "travelerSafeReachId": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^[A-Za-z0-9!@#$%^&*\\-_+=~]{10}$"
+        },
+        "travelerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "familyUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "familyOwnerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "familyName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "relationship": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "revoked"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "travelerUid",
+        "travelerOwnerUid",
+        "travelerSafeReachId",
+        "travelerName",
+        "familyUid",
+        "familyOwnerUid",
+        "familyName",
+        "relationship",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "FamilyAccess": {
+      "title": "FamilyAccess",
+      "description": "Traveler-controlled access grant enabling O(1) authorization checks in security rules across multi-profile accounts.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 260,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "travelerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "travelerOwnerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "familyOwnerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["approved", "revoked"]
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "travelerUid",
+        "travelerOwnerUid",
+        "familyOwnerUid",
+        "status",
+        "updatedAt"
+      ]
+    },
+    "LiveLocationState": {
+      "title": "LiveLocationState",
+      "description": "Real-time location and active destination telemetry readable only by owner, admin, and approved family.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "lat": {
+          "type": "number"
+        },
+        "lng": {
+          "type": "number"
+        },
+        "accuracyMeters": {
+          "type": "number"
+        },
+        "locationLabel": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 160
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "idle",
+            "travelling",
+            "reached_safely",
+            "sos_alert",
+            "route_deviation",
+            "signal_stale"
+          ]
+        },
+        "isSharingEnabled": {
+          "type": "boolean"
+        },
+        "activeTripId": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 128
+        },
+        "destinationName": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 120
+        },
+        "destinationLat": {
+          "type": "number"
+        },
+        "destinationLng": {
+          "type": "number"
+        },
+        "geofenceRadiusMeters": {
+          "type": "number"
+        },
+        "distanceToDestinationMeters": {
+          "type": "number"
+        },
+        "routeDeviationMeters": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "ownerUid",
+        "lat",
+        "lng",
+        "accuracyMeters",
+        "locationLabel",
+        "status",
+        "isSharingEnabled",
+        "activeTripId",
+        "destinationName",
+        "destinationLat",
+        "destinationLng",
+        "geofenceRadiusMeters",
+        "distanceToDestinationMeters",
+        "routeDeviationMeters",
+        "updatedAt"
+      ]
+    },
+    "Trip": {
+      "title": "Trip",
+      "description": "Planned and active journey with origin, destination, geofence radius, and encoded route.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "originName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "originLat": {
+          "type": "number"
+        },
+        "originLng": {
+          "type": "number"
+        },
+        "destinationName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "destinationLat": {
+          "type": "number"
+        },
+        "destinationLng": {
+          "type": "number"
+        },
+        "geofenceRadiusMeters": {
+          "type": "number"
+        },
+        "travelMode": {
+          "type": "string",
+          "enum": ["DRIVING", "WALKING", "TRANSIT", "TWO_WHEELER"]
+        },
+        "expectedEncodedPolyline": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 20000
+        },
+        "actualEncodedPolyline": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 20000
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "travelling",
+            "reached_safely",
+            "cancelled",
+            "sos_alert",
+            "route_deviation"
+          ]
+        },
+        "maxDeviationMeters": {
+          "type": "number"
+        },
+        "arrivedAtMs": {
+          "type": "number"
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "uid",
+        "ownerUid",
+        "originName",
+        "originLat",
+        "originLng",
+        "destinationName",
+        "destinationLat",
+        "destinationLng",
+        "geofenceRadiusMeters",
+        "travelMode",
+        "expectedEncodedPolyline",
+        "actualEncodedPolyline",
+        "status",
+        "maxDeviationMeters",
+        "arrivedAtMs",
+        "startedAt",
+        "updatedAt"
+      ]
+    },
+    "LocationHistoryEntry": {
+      "title": "LocationHistoryEntry",
+      "description": "Protected location breadcrumb stored exclusively for the traveler account owner.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "tripId": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 128
+        },
+        "lat": {
+          "type": "number"
+        },
+        "lng": {
+          "type": "number"
+        },
+        "locationLabel": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 160
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "idle",
+            "travelling",
+            "reached_safely",
+            "sos_alert",
+            "route_deviation",
+            "signal_stale"
+          ]
+        },
+        "recordedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "uid",
+        "ownerUid",
+        "tripId",
+        "lat",
+        "lng",
+        "locationLabel",
+        "status",
+        "recordedAt"
+      ]
+    },
+    "FamilyAlert": {
+      "title": "FamilyAlert",
+      "description": "Safety notification delivered from a traveler account to an approved family tracker account.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "travelerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "travelerOwnerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "travelerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "recipientUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "recipientOwnerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "trip_started",
+            "reached_safely",
+            "route_deviation",
+            "sos_alert",
+            "signal_stale",
+            "sharing_stopped"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "locationLabel": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 160
+        },
+        "lat": {
+          "type": "number"
+        },
+        "lng": {
+          "type": "number"
+        },
+        "isRead": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "travelerUid",
+        "travelerOwnerUid",
+        "travelerName",
+        "recipientUid",
+        "recipientOwnerUid",
+        "type",
+        "message",
+        "locationLabel",
+        "lat",
+        "lng",
+        "isRead",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "SafeReach account profiles with 10-character complex Unique ID and admin-controlled subscription access."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": "PrivateUserInfo",
+      "description": "Owner-only private account info (email, emergency contact label, zero phone numbers)."
+    },
+    "/directory/{safeReachId}": {
+      "schema": "DirectoryEntry",
+      "description": "Lookup table mapping 10-character complex Unique IDs to account IDs without exposing PII or location."
+    },
+    "/familyLinks/{linkId}": {
+      "schema": "FamilyLink",
+      "description": "Family link requests and approved relationships between traveler and family accounts."
+    },
+    "/familyAccess/{accessId}": {
+      "schema": "FamilyAccess",
+      "description": "O(1) traveler-controlled access grant for cross-user live location reads."
+    },
+    "/users/{userId}/live/{docId}": {
+      "schema": "LiveLocationState",
+      "description": "Current live GPS state readable only by owner, admin, and approved family when subscribed."
+    },
+    "/users/{userId}/trips/{tripId}": {
+      "schema": "Trip",
+      "description": "Planned and active journeys with geofence radius and route polylines."
+    },
+    "/users/{userId}/history/{entryId}": {
+      "schema": "LocationHistoryEntry",
+      "description": "Protected personal location history breadcrumbs accessible only to the owner."
+    },
+    "/familyAlerts/{alertId}": {
+      "schema": "FamilyAlert",
+      "description": "Real-time arrival, route deviation, and SOS notifications for approved family members."
+    }
+  }
+}

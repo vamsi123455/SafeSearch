@@ -1,0 +1,6 @@
+{
+  "name": "SafeReach",
+  "description": "Location-based personal and women's safety companion connecting travelers with trusted family members via geofenced safe-arrival tracking.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,691 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Primitives
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    // Bootstrapped Admin (Verified Email Required - Prevents Email Spoofing)
+    function isAdmin() {
+      return isVerifiedUser()
+        && 'email' in request.auth.token
+        && request.auth.token.email == 'udayphanindravamsikoyya@gmail.com';
+    }
+
+    function isOwnerOfData(docId, data) {
+      return isSignedIn() && (
+        ('ownerUid' in data && data.ownerUid == request.auth.uid)
+        || (!('ownerUid' in data) && docId == request.auth.uid)
+      );
+    }
+
+    function isParentUserOwner(userId) {
+      return isSignedIn()
+        && isValidId(userId)
+        && exists(/databases/$(database)/documents/users/$(userId))
+        && isOwnerOfData(userId, get(/databases/$(database)/documents/users/$(userId)).data);
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidLinkId(id) {
+      return id is string && id.size() >= 3 && id.size() <= 260 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // 10-character Unique ID containing uppercase, lowercase, digits, and special symbols
+    function isValidComplexSafeReachId(id) {
+      return id is string
+        && id.size() == 10
+        && id.matches('^[A-Za-z0-9!@#$%^&*\\-_+=~]{10}$')
+        && id.matches('.*[A-Z].*')
+        && id.matches('.*[a-z].*')
+        && id.matches('.*[0-9].*')
+        && id.matches('.*[!@#$%^&*\\-_+=~].*');
+    }
+
+    // Legacy 7-char ID support only for pre-existing records on updates/reads
+    function isLegacySafeReachId(id) {
+      return id is string && id.size() == 7 && id.matches('^SR[0-9]{5}$');
+    }
+
+    function isValidSafeReachId(id) {
+      return isValidComplexSafeReachId(id) || isLegacySafeReachId(id);
+    }
+
+    function isValidStatus(status) {
+      return status in ['idle', 'travelling', 'reached_safely', 'sos_alert', 'route_deviation', 'signal_stale'];
+    }
+
+    function isValidTripStatus(status) {
+      return status in ['travelling', 'reached_safely', 'cancelled', 'sos_alert', 'route_deviation'];
+    }
+
+    function isValidSubscriptionStatus(status) {
+      return status in ['pending', 'active', 'revoked'];
+    }
+
+    function hasActiveSubscription(userId) {
+      return isAdmin() || (
+        isValidId(userId)
+        && exists(/databases/$(database)/documents/users/$(userId))
+        && 'accessGranted' in get(/databases/$(database)/documents/users/$(userId)).data
+        && get(/databases/$(database)/documents/users/$(userId)).data.accessGranted == true
+        && 'subscriptionStatus' in get(/databases/$(database)/documents/users/$(userId)).data
+        && get(/databases/$(database)/documents/users/$(userId)).data.subscriptionStatus == 'active'
+      );
+    }
+
+    function isApprovedFamilyOf(travelerUid) {
+      return isSignedIn()
+        && isValidId(travelerUid)
+        && (
+          (exists(/databases/$(database)/documents/familyAccess/$(travelerUid + '_' + request.auth.uid))
+           && get(/databases/$(database)/documents/familyAccess/$(travelerUid + '_' + request.auth.uid)).data.status == 'approved')
+          ||
+          (exists(/databases/$(database)/documents/familyLinks/$(travelerUid + '_' + request.auth.uid))
+           && get(/databases/$(database)/documents/familyLinks/$(travelerUid + '_' + request.auth.uid)).data.status == 'approved')
+        );
+    }
+
+    // Validation Blueprints
+    function isValidUserProfile(data, expectedDocId) {
+      return data.keys().hasAll([
+          'uid', 'ownerUid', 'safeReachId', 'displayName', 'rolePreference',
+          'isSharingEnabled', 'status', 'subscriptionStatus', 'accessGranted',
+          'subscriptionNote', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'ownerUid', 'safeReachId', 'displayName', 'rolePreference',
+          'isSharingEnabled', 'status', 'subscriptionStatus', 'accessGranted',
+          'subscriptionNote', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.uid == expectedDocId
+        && isValidId(data.ownerUid)
+        && (isAdmin() || data.ownerUid == request.auth.uid)
+        && isValidSafeReachId(data.safeReachId)
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
+        && data.rolePreference in ['traveler', 'family', 'both']
+        && data.isSharingEnabled is bool
+        && isValidStatus(data.status)
+        && isValidSubscriptionStatus(data.subscriptionStatus)
+        && data.accessGranted is bool
+        && data.subscriptionNote is string && data.subscriptionNote.size() <= 120
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPrivateUserInfo(data, expectedUserId) {
+      return data.keys().hasAll([
+          'uid', 'ownerUid', 'email', 'emergencyContactName',
+          'defaultGeofenceRadiusMeters', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'ownerUid', 'email', 'emergencyContactName',
+          'defaultGeofenceRadiusMeters', 'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.uid == expectedUserId
+        && isValidId(data.ownerUid)
+        && data.ownerUid == request.auth.uid
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && data.emergencyContactName is string && data.emergencyContactName.size() <= 80
+        && data.defaultGeofenceRadiusMeters is number
+        && data.defaultGeofenceRadiusMeters >= 50 && data.defaultGeofenceRadiusMeters <= 5000
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidDirectoryEntry(data) {
+      return data.keys().hasAll(['safeReachId', 'uid', 'ownerUid', 'displayName', 'createdAt'])
+        && data.keys().hasOnly(['safeReachId', 'uid', 'ownerUid', 'displayName', 'createdAt'])
+        && isValidSafeReachId(data.safeReachId)
+        && isValidId(data.uid)
+        && isValidId(data.ownerUid)
+        && (isAdmin() || data.ownerUid == request.auth.uid)
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
+        && data.createdAt is timestamp;
+    }
+
+    function isValidFamilyLink(data) {
+      return data.keys().hasAll([
+          'id', 'travelerUid', 'travelerOwnerUid', 'travelerSafeReachId', 'travelerName',
+          'familyUid', 'familyOwnerUid', 'familyName', 'relationship', 'status', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'travelerUid', 'travelerOwnerUid', 'travelerSafeReachId', 'travelerName',
+          'familyUid', 'familyOwnerUid', 'familyName', 'relationship', 'status', 'createdAt', 'updatedAt'
+        ])
+        && isValidLinkId(data.id)
+        && isValidId(data.travelerUid)
+        && isValidId(data.travelerOwnerUid)
+        && isValidSafeReachId(data.travelerSafeReachId)
+        && data.travelerName is string && data.travelerName.size() >= 1 && data.travelerName.size() <= 80
+        && isValidId(data.familyUid)
+        && isValidId(data.familyOwnerUid)
+        && data.familyName is string && data.familyName.size() >= 1 && data.familyName.size() <= 80
+        && data.relationship is string && data.relationship.size() >= 1 && data.relationship.size() <= 40
+        && data.status in ['pending', 'approved', 'revoked']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidFamilyAccess(data, expectedAccessId) {
+      return data.keys().hasAll([
+          'id', 'travelerUid', 'travelerOwnerUid', 'familyOwnerUid', 'status', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'travelerUid', 'travelerOwnerUid', 'familyOwnerUid', 'status', 'updatedAt'
+        ])
+        && isValidLinkId(data.id)
+        && data.id == expectedAccessId
+        && data.id == data.travelerUid + '_' + data.familyOwnerUid
+        && isValidId(data.travelerUid)
+        && isValidId(data.travelerOwnerUid)
+        && data.travelerOwnerUid == request.auth.uid
+        && isValidId(data.familyOwnerUid)
+        && data.status in ['approved', 'revoked']
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidLiveLocationState(data, expectedUserId) {
+      return data.keys().hasAll([
+          'uid', 'ownerUid', 'lat', 'lng', 'accuracyMeters', 'locationLabel', 'status',
+          'isSharingEnabled', 'activeTripId', 'destinationName',
+          'destinationLat', 'destinationLng', 'geofenceRadiusMeters',
+          'distanceToDestinationMeters', 'routeDeviationMeters', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'ownerUid', 'lat', 'lng', 'accuracyMeters', 'locationLabel', 'status',
+          'isSharingEnabled', 'activeTripId', 'destinationName',
+          'destinationLat', 'destinationLng', 'geofenceRadiusMeters',
+          'distanceToDestinationMeters', 'routeDeviationMeters', 'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.uid == expectedUserId
+        && isValidId(data.ownerUid)
+        && (isAdmin() || data.ownerUid == request.auth.uid)
+        && data.lat is number && data.lat >= -90 && data.lat <= 90
+        && data.lng is number && data.lng >= -180 && data.lng <= 180
+        && data.accuracyMeters is number && data.accuracyMeters >= 0 && data.accuracyMeters <= 100000
+        && data.locationLabel is string && data.locationLabel.size() <= 160
+        && isValidStatus(data.status)
+        && data.isSharingEnabled is bool
+        && data.activeTripId is string && data.activeTripId.size() <= 128
+        && data.destinationName is string && data.destinationName.size() <= 120
+        && data.destinationLat is number && data.destinationLat >= -90 && data.destinationLat <= 90
+        && data.destinationLng is number && data.destinationLng >= -180 && data.destinationLng <= 180
+        && data.geofenceRadiusMeters is number && data.geofenceRadiusMeters >= 50 && data.geofenceRadiusMeters <= 5000
+        && data.distanceToDestinationMeters is number && data.distanceToDestinationMeters >= 0
+        && data.routeDeviationMeters is number && data.routeDeviationMeters >= 0
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTrip(data, expectedUserId) {
+      return data.keys().hasAll([
+          'id', 'uid', 'ownerUid', 'originName', 'originLat', 'originLng',
+          'destinationName', 'destinationLat', 'destinationLng',
+          'geofenceRadiusMeters', 'travelMode', 'expectedEncodedPolyline',
+          'actualEncodedPolyline', 'status', 'maxDeviationMeters',
+          'arrivedAtMs', 'startedAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'uid', 'ownerUid', 'originName', 'originLat', 'originLng',
+          'destinationName', 'destinationLat', 'destinationLng',
+          'geofenceRadiusMeters', 'travelMode', 'expectedEncodedPolyline',
+          'actualEncodedPolyline', 'status', 'maxDeviationMeters',
+          'arrivedAtMs', 'startedAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.uid)
+        && data.uid == expectedUserId
+        && isValidId(data.ownerUid)
+        && data.ownerUid == request.auth.uid
+        && data.originName is string && data.originName.size() >= 1 && data.originName.size() <= 120
+        && data.originLat is number && data.originLat >= -90 && data.originLat <= 90
+        && data.originLng is number && data.originLng >= -180 && data.originLng <= 180
+        && data.destinationName is string && data.destinationName.size() >= 1 && data.destinationName.size() <= 120
+        && data.destinationLat is number && data.destinationLat >= -90 && data.destinationLat <= 90
+        && data.destinationLng is number && data.destinationLng >= -180 && data.destinationLng <= 180
+        && data.geofenceRadiusMeters is number && data.geofenceRadiusMeters >= 50 && data.geofenceRadiusMeters <= 5000
+        && data.travelMode in ['DRIVING', 'WALKING', 'TRANSIT', 'TWO_WHEELER']
+        && data.expectedEncodedPolyline is string && data.expectedEncodedPolyline.size() <= 20000
+        && data.actualEncodedPolyline is string && data.actualEncodedPolyline.size() <= 20000
+        && isValidTripStatus(data.status)
+        && data.maxDeviationMeters is number && data.maxDeviationMeters >= 0
+        && data.arrivedAtMs is number && data.arrivedAtMs >= 0
+        && data.startedAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidLocationHistoryEntry(data, expectedUserId) {
+      return data.keys().hasAll([
+          'id', 'uid', 'ownerUid', 'tripId', 'lat', 'lng', 'locationLabel', 'status', 'recordedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'uid', 'ownerUid', 'tripId', 'lat', 'lng', 'locationLabel', 'status', 'recordedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.uid)
+        && data.uid == expectedUserId
+        && isValidId(data.ownerUid)
+        && data.ownerUid == request.auth.uid
+        && data.tripId is string && data.tripId.size() <= 128
+        && data.lat is number && data.lat >= -90 && data.lat <= 90
+        && data.lng is number && data.lng >= -180 && data.lng <= 180
+        && data.locationLabel is string && data.locationLabel.size() <= 160
+        && isValidStatus(data.status)
+        && data.recordedAt is timestamp;
+    }
+
+    function isValidFamilyAlert(data) {
+      return data.keys().hasAll([
+          'id', 'travelerUid', 'travelerOwnerUid', 'travelerName', 'recipientUid', 'recipientOwnerUid',
+          'type', 'message', 'locationLabel', 'lat', 'lng', 'isRead', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'travelerUid', 'travelerOwnerUid', 'travelerName', 'recipientUid', 'recipientOwnerUid',
+          'type', 'message', 'locationLabel', 'lat', 'lng', 'isRead', 'createdAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.travelerUid)
+        && isValidId(data.travelerOwnerUid)
+        && data.travelerName is string && data.travelerName.size() >= 1 && data.travelerName.size() <= 80
+        && isValidId(data.recipientUid)
+        && isValidId(data.recipientOwnerUid)
+        && data.type in ['trip_started', 'reached_safely', 'route_deviation', 'sos_alert', 'signal_stale', 'sharing_stopped']
+        && data.message is string && data.message.size() >= 1 && data.message.size() <= 240
+        && data.locationLabel is string && data.locationLabel.size() <= 160
+        && data.lat is number && data.lat >= -90 && data.lat <= 90
+        && data.lng is number && data.lng >= -180 && data.lng <= 180
+        && data.isRead is bool
+        && data.createdAt is timestamp;
+    }
+
+    // 1. User Profiles (Admin controls access/subscriptions & modifications; owner reads/lists own)
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (
+        isAdmin()
+        || userId == request.auth.uid
+        || (resource != null && (isOwnerOfData(userId, existing()) || isApprovedFamilyOf(userId)))
+      );
+      allow list: if isSignedIn() && (isAdmin() || resource.data.ownerUid == request.auth.uid);
+      allow create: if isSignedIn()
+        && isValidId(userId)
+        && isValidUserProfile(incoming(), userId)
+        && isValidComplexSafeReachId(incoming().safeReachId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            incoming().subscriptionStatus == 'pending'
+            && incoming().accessGranted == false
+            && incoming().subscriptionNote == 'Awaiting admin approval'
+          )
+        )
+        && existsAfter(/databases/$(database)/documents/directory/$(incoming().safeReachId));
+      allow update: if isSignedIn()
+        && isValidId(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && (
+          ('ownerUid' in existing() && incoming().ownerUid == existing().ownerUid)
+          || (!('ownerUid' in existing()) && incoming().ownerUid == request.auth.uid)
+        )
+        && incoming().safeReachId == existing().safeReachId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'ownerUid', 'displayName', 'rolePreference', 'subscriptionStatus',
+              'accessGranted', 'subscriptionNote', 'isSharingEnabled', 'status', 'updatedAt'
+            ])
+          )
+          ||
+          (
+            isOwnerOfData(userId, existing())
+            && hasActiveSubscription(userId)
+            && incoming().diff(existing()).affectedKeys().hasOnly(['ownerUid', 'isSharingEnabled', 'status', 'updatedAt'])
+          )
+        );
+      allow delete: if isSignedIn() && isValidId(userId) && (isAdmin() || isOwnerOfData(userId, existing()));
+
+      // 2. Owner-Only Private Account Preferences (Zero Phone Numbers)
+      match /private/{docId} {
+        allow get: if isSignedIn()
+          && isValidId(userId)
+          && docId == 'info'
+          && (
+            (resource != null && isOwnerOfData(userId, existing()))
+            || isParentUserOwner(userId)
+          );
+        allow list: if false;
+        allow create: if isSignedIn()
+          && isValidId(userId)
+          && docId == 'info'
+          && isValidPrivateUserInfo(incoming(), userId)
+          && incoming().updatedAt == request.time
+          && getAfter(/databases/$(database)/documents/users/$(userId)).data.ownerUid == request.auth.uid;
+        allow update: if isSignedIn()
+          && isValidId(userId)
+          && docId == 'info'
+          && (isOwnerOfData(userId, existing()) || isParentUserOwner(userId))
+          && isValidPrivateUserInfo(incoming(), userId)
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'ownerUid', 'emergencyContactName', 'defaultGeofenceRadiusMeters', 'updatedAt'
+          ]);
+        allow delete: if isSignedIn()
+          && isValidId(userId)
+          && docId == 'info'
+          && (isAdmin() || isOwnerOfData(userId, existing()) || isParentUserOwner(userId));
+      }
+
+      // 3. Live Location Telemetry (Owner + Admin + Subscribed Approved Family Only)
+      match /live/{docId} {
+        allow get: if isSignedIn() && isValidId(userId) && docId == 'current' && (
+          isAdmin()
+          || (resource != null && isOwnerOfData(userId, existing()))
+          || (resource == null && isParentUserOwner(userId))
+          || (resource != null && isApprovedFamilyOf(userId) && hasActiveSubscription(userId))
+        );
+        allow list: if false;
+        allow create: if isSignedIn()
+          && isValidId(userId)
+          && docId == 'current'
+          && isValidLiveLocationState(incoming(), userId)
+          && incoming().updatedAt == request.time
+          && getAfter(/databases/$(database)/documents/users/$(userId)).data.ownerUid == request.auth.uid
+          && (
+            hasActiveSubscription(userId)
+            || (incoming().isSharingEnabled == false && incoming().status == 'idle' && incoming().activeTripId == '')
+          );
+        allow update: if isSignedIn()
+          && isValidId(userId)
+          && docId == 'current'
+          && isValidLiveLocationState(incoming(), userId)
+          && incoming().updatedAt == request.time
+          && (
+            (
+              isAdmin()
+              && incoming().diff(existing()).affectedKeys().hasOnly(['isSharingEnabled', 'status', 'updatedAt'])
+            )
+            ||
+            (
+              isOwnerOfData(userId, existing())
+              && hasActiveSubscription(userId)
+              && incoming().diff(existing()).affectedKeys().hasOnly([
+                'ownerUid', 'lat', 'lng', 'accuracyMeters', 'locationLabel', 'status',
+                'isSharingEnabled', 'activeTripId', 'destinationName',
+                'destinationLat', 'destinationLng', 'geofenceRadiusMeters',
+                'distanceToDestinationMeters', 'routeDeviationMeters', 'updatedAt'
+              ])
+            )
+          );
+        allow delete: if isSignedIn() && isValidId(userId) && docId == 'current' && (isAdmin() || isOwnerOfData(userId, existing()) || isParentUserOwner(userId));
+      }
+
+      // 4. Journeys / Trips (Requires active subscription for owner writes)
+      match /trips/{tripId} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(tripId) && (
+          isAdmin()
+          || (resource != null && isOwnerOfData(userId, existing()))
+          || (resource == null && isParentUserOwner(userId))
+          || (resource != null && isApprovedFamilyOf(userId) && hasActiveSubscription(userId))
+        );
+        allow list: if isSignedIn() && (isAdmin() || resource.data.ownerUid == request.auth.uid || userId == request.auth.uid);
+        allow create: if isSignedIn()
+          && isValidId(userId)
+          && isValidId(tripId)
+          && isValidTrip(incoming(), userId)
+          && incoming().id == tripId
+          && incoming().status == 'travelling'
+          && incoming().startedAt == request.time
+          && incoming().updatedAt == request.time
+          && hasActiveSubscription(userId)
+          && isOwnerOfData(userId, get(/databases/$(database)/documents/users/$(userId)).data);
+        allow update: if isSignedIn()
+          && isValidId(userId)
+          && isValidId(tripId)
+          && isOwnerOfData(userId, existing())
+          && isValidTrip(incoming(), userId)
+          && hasActiveSubscription(userId)
+          && existing().status != 'reached_safely'
+          && existing().status != 'cancelled'
+          && incoming().id == existing().id
+          && incoming().uid == existing().uid
+          && incoming().originName == existing().originName
+          && incoming().originLat == existing().originLat
+          && incoming().originLng == existing().originLng
+          && incoming().destinationName == existing().destinationName
+          && incoming().destinationLat == existing().destinationLat
+          && incoming().destinationLng == existing().destinationLng
+          && incoming().startedAt == existing().startedAt
+          && incoming().updatedAt == request.time
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'ownerUid', 'actualEncodedPolyline', 'status', 'maxDeviationMeters', 'arrivedAtMs', 'updatedAt'
+            ])
+            || incoming().diff(existing()).affectedKeys().hasOnly([
+              'ownerUid', 'geofenceRadiusMeters', 'updatedAt'
+            ])
+          );
+        allow delete: if isSignedIn() && isValidId(userId) && isValidId(tripId) && (isAdmin() || isOwnerOfData(userId, existing()) || isParentUserOwner(userId));
+      }
+
+      // 5. Protected Location History (Strictly Owner Only)
+      match /history/{entryId} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(entryId) && (
+          (resource != null && isOwnerOfData(userId, existing()))
+          || (resource == null && isParentUserOwner(userId))
+        );
+        allow list: if isSignedIn() && (isAdmin() || resource.data.ownerUid == request.auth.uid || userId == request.auth.uid);
+        allow create: if isSignedIn()
+          && isValidId(userId)
+          && isValidId(entryId)
+          && isValidLocationHistoryEntry(incoming(), userId)
+          && incoming().id == entryId
+          && incoming().recordedAt == request.time
+          && hasActiveSubscription(userId)
+          && isOwnerOfData(userId, get(/databases/$(database)/documents/users/$(userId)).data);
+        allow update: if false;
+        allow delete: if isSignedIn() && isValidId(userId) && isValidId(entryId) && (isAdmin() || isOwnerOfData(userId, existing()) || isParentUserOwner(userId));
+      }
+    }
+
+    // 6. SafeReach 10-Char Unique ID Directory (Exact lookup only, zero PII/location, never listable)
+    match /directory/{safeReachId} {
+      allow get: if isSignedIn() && isValidSafeReachId(safeReachId);
+      allow list: if false;
+      allow create: if isSignedIn()
+        && isValidComplexSafeReachId(safeReachId)
+        && isValidDirectoryEntry(incoming())
+        && incoming().safeReachId == safeReachId
+        && incoming().createdAt == request.time
+        && getAfter(/databases/$(database)/documents/users/$(incoming().uid)).data.ownerUid == request.auth.uid;
+      allow update: if isAdmin()
+        && isValidSafeReachId(safeReachId)
+        && isValidDirectoryEntry(incoming())
+        && incoming().safeReachId == safeReachId
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['ownerUid', 'displayName']);
+      allow delete: if isSignedIn() && isValidSafeReachId(safeReachId) && (isAdmin() || isOwnerOfData(existing().uid, existing()));
+    }
+
+    // 7. Consent-Gated Family Links (Requires active subscription to send/approve)
+    match /familyLinks/{linkId} {
+      allow get: if isSignedIn()
+        && isValidLinkId(linkId)
+        && (
+          isAdmin()
+          || ('travelerOwnerUid' in existing() && existing().travelerOwnerUid == request.auth.uid)
+          || ('familyOwnerUid' in existing() && existing().familyOwnerUid == request.auth.uid)
+          || existing().travelerUid == request.auth.uid
+          || existing().familyUid == request.auth.uid
+        );
+      allow list: if isSignedIn()
+        && (
+          isAdmin()
+          || resource.data.travelerOwnerUid == request.auth.uid
+          || resource.data.familyOwnerUid == request.auth.uid
+          || resource.data.travelerUid == request.auth.uid
+          || resource.data.familyUid == request.auth.uid
+        );
+      allow create: if isSignedIn()
+        && isValidLinkId(linkId)
+        && isValidFamilyLink(incoming())
+        && incoming().id == linkId
+        && linkId == incoming().travelerUid + '_' + incoming().familyUid
+        && incoming().familyOwnerUid == request.auth.uid
+        && incoming().travelerUid != incoming().familyUid
+        && incoming().status == 'pending'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && hasActiveSubscription(incoming().familyUid)
+        && exists(/databases/$(database)/documents/users/$(incoming().travelerUid))
+        && (
+          ('ownerUid' in get(/databases/$(database)/documents/users/$(incoming().travelerUid)).data
+            && incoming().travelerOwnerUid == get(/databases/$(database)/documents/users/$(incoming().travelerUid)).data.ownerUid)
+          || (!('ownerUid' in get(/databases/$(database)/documents/users/$(incoming().travelerUid)).data)
+            && incoming().travelerOwnerUid == incoming().travelerUid)
+        );
+      allow update: if isSignedIn()
+        && isValidLinkId(linkId)
+        && isValidFamilyLink(incoming())
+        && incoming().id == existing().id
+        && incoming().travelerUid == existing().travelerUid
+        && (
+          ('travelerOwnerUid' in existing() && incoming().travelerOwnerUid == existing().travelerOwnerUid)
+          || (!('travelerOwnerUid' in existing()) && incoming().travelerOwnerUid == existing().travelerUid)
+        )
+        && incoming().travelerSafeReachId == existing().travelerSafeReachId
+        && incoming().familyUid == existing().familyUid
+        && (
+          ('familyOwnerUid' in existing() && incoming().familyOwnerUid == existing().familyOwnerUid)
+          || (!('familyOwnerUid' in existing()) && incoming().familyOwnerUid == existing().familyUid)
+        )
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            (
+              ('travelerOwnerUid' in existing() && existing().travelerOwnerUid == request.auth.uid)
+              || (!('travelerOwnerUid' in existing()) && existing().travelerUid == request.auth.uid)
+            )
+            && hasActiveSubscription(existing().travelerUid)
+            && incoming().diff(existing()).affectedKeys().hasOnly(['travelerOwnerUid', 'familyOwnerUid', 'status', 'updatedAt'])
+          )
+          ||
+          (
+            (
+              ('familyOwnerUid' in existing() && existing().familyOwnerUid == request.auth.uid)
+              || (!('familyOwnerUid' in existing()) && existing().familyUid == request.auth.uid)
+            )
+            && hasActiveSubscription(existing().familyUid)
+            && incoming().status == 'pending'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['travelerOwnerUid', 'familyOwnerUid', 'relationship', 'status', 'familyName', 'updatedAt'])
+          )
+        );
+      allow delete: if isSignedIn()
+        && isValidLinkId(linkId)
+        && (
+          isAdmin()
+          || ('travelerOwnerUid' in existing() && existing().travelerOwnerUid == request.auth.uid)
+          || ('familyOwnerUid' in existing() && existing().familyOwnerUid == request.auth.uid)
+          || existing().travelerUid == request.auth.uid
+          || existing().familyUid == request.auth.uid
+        );
+    }
+
+    // 8. Traveler-Controlled Family Access Grants (for O(1) cross-user rule verification)
+    match /familyAccess/{accessId} {
+      allow get: if isSignedIn()
+        && isValidLinkId(accessId)
+        && (isAdmin() || existing().travelerOwnerUid == request.auth.uid || existing().familyOwnerUid == request.auth.uid);
+      allow list: if false;
+      allow create, update: if isSignedIn()
+        && isValidLinkId(accessId)
+        && isValidFamilyAccess(incoming(), accessId)
+        && hasActiveSubscription(incoming().travelerUid)
+        && incoming().updatedAt == request.time;
+      allow delete: if isSignedIn()
+        && isValidLinkId(accessId)
+        && (isAdmin() || existing().travelerOwnerUid == request.auth.uid);
+    }
+
+    // 9. Family Safety Alerts (Arrivals, Deviations, SOS)
+    match /familyAlerts/{alertId} {
+      allow get: if isSignedIn()
+        && isValidId(alertId)
+        && (
+          isAdmin()
+          || ('recipientOwnerUid' in existing() && existing().recipientOwnerUid == request.auth.uid)
+          || ('travelerOwnerUid' in existing() && existing().travelerOwnerUid == request.auth.uid)
+          || existing().recipientUid == request.auth.uid
+          || existing().travelerUid == request.auth.uid
+        );
+      allow list: if isSignedIn()
+        && (
+          isAdmin()
+          || resource.data.recipientOwnerUid == request.auth.uid
+          || resource.data.travelerOwnerUid == request.auth.uid
+          || resource.data.recipientUid == request.auth.uid
+          || resource.data.travelerUid == request.auth.uid
+        );
+      allow create: if isSignedIn()
+        && isValidId(alertId)
+        && isValidFamilyAlert(incoming())
+        && incoming().id == alertId
+        && incoming().travelerOwnerUid == request.auth.uid
+        && incoming().isRead == false
+        && incoming().createdAt == request.time
+        && hasActiveSubscription(incoming().travelerUid)
+        && exists(/databases/$(database)/documents/familyLinks/$(incoming().travelerUid + '_' + incoming().recipientUid))
+        && get(/databases/$(database)/documents/familyLinks/$(incoming().travelerUid + '_' + incoming().recipientUid)).data.status == 'approved'
+        && incoming().recipientOwnerUid == get(/databases/$(database)/documents/familyLinks/$(incoming().travelerUid + '_' + incoming().recipientUid)).data.familyOwnerUid;
+      allow update: if isSignedIn()
+        && isValidId(alertId)
+        && isValidFamilyAlert(incoming())
+        && (
+          ('recipientOwnerUid' in existing() && existing().recipientOwnerUid == request.auth.uid)
+          || existing().recipientUid == request.auth.uid
+        )
+        && existing().isRead == false
+        && incoming().isRead == true
+        && incoming().diff(existing()).affectedKeys().hasOnly(['isRead']);
+      allow delete: if isSignedIn()
+        && isValidId(alertId)
+        && (
+          isAdmin()
+          || ('recipientOwnerUid' in existing() && existing().recipientOwnerUid == request.auth.uid)
+          || ('travelerOwnerUid' in existing() && existing().travelerOwnerUid == request.auth.uid)
+          || existing().recipientUid == request.auth.uid
+          || existing().travelerUid == request.auth.uid
+        );
+    }
+  }
+}
