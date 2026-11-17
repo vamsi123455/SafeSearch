@@ -1,22 +1,5 @@
-import React, {useEffect, useMemo, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {APIProvider} from '@vis.gl/react-google-maps';
-import {
-  createUserWithEmailAndPassword,
-  onAuthStateChanged,
-  sendEmailVerification,
-  signInWithEmailAndPassword,
-  signInWithPopup,
-  signOut,
-  updateProfile,
-  User,
-} from 'firebase/auth';
-import {
-  collection,
-  doc,
-  onSnapshot,
-  query,
-  where,
-} from 'firebase/firestore';
 import {
   Check,
   Clock,
@@ -43,20 +26,20 @@ import {LocationHistoryPanel} from './components/history/LocationHistoryPanel';
 import {LocationPermissionModal} from './components/modals/LocationPermissionModal';
 import {TravelerWorkspace} from './components/traveler/TravelerWorkspace';
 import {
-  auth,
-  db,
-  googleProvider,
-  handleFirestoreError,
-  OperationType,
-} from './lib/firebase';
-import {
   createAccountId,
   deleteMultipleSafeReachAccounts,
   deleteSafeReachAccount,
+  fetchWorkspaceSnapshot,
+  getStoredSession,
+  loginWithEmailPassword,
   registerSafeReachProfile,
+  setStoredSession,
+  signUpWithEmailPassword,
+  subscribeToSafeReachSync,
 } from './lib/safereachApi';
 import {
   ADMIN_EMAIL,
+  AuthSession,
   FamilyAlert,
   FamilyLink,
   isAdminEmail,
@@ -76,45 +59,19 @@ const MAPS_API_KEY: string =
   (typeof process !== 'undefined' && process.env?.GOOGLE_MAPS_API_KEY) ||
   '';
 
-function getSessionAccountKey(authUid: string): string {
-  return `safereach_active_account_${authUid}`;
-}
-
-function formatFirebaseAuthError(err: unknown, fallback: string): string {
-  if (err && typeof err === 'object' && 'code' in err) {
-    const code = String((err as {code?: unknown}).code || '');
-    switch (code) {
-      case 'auth/operation-not-allowed':
-        return 'Email/Password authentication is not enabled for this project.';
-      case 'auth/email-already-in-use':
-        return 'An account with this email already exists. Switch to Login and sign in with your email and password.';
-      case 'auth/invalid-credential':
-      case 'auth/wrong-password':
-      case 'auth/user-not-found':
-        return 'Invalid email/username or password. Please check your credentials or sign up as a new user.';
-      case 'auth/weak-password':
-        return 'Password must be at least 6 characters.';
-      case 'auth/invalid-email':
-        return 'Please enter a valid email address.';
-      case 'auth/popup-closed-by-user':
-        return 'Google registration popup was closed before completing.';
-      default:
-        break;
-    }
-  }
-  return err instanceof Error ? err.message : fallback;
+function getSessionAccountKey(ownerUid: string): string {
+  return `safereach_active_account_${ownerUid}`;
 }
 
 function SafeReachAppShell() {
-  const [authReady, setAuthReady] = useState(false);
-  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
-  const [accountsLoading, setAccountsLoading] = useState(true);
-
-  const [ownedQueryAccounts, setOwnedQueryAccounts] = useState<UserProfile[]>(
-    []
+  const [session, setSession] = useState<AuthSession | null>(() =>
+    getStoredSession()
   );
-  const [legacyPrimaryAccount, setLegacyPrimaryAccount] =
-    useState<UserProfile | null>(null);
+  const [accountsLoading, setAccountsLoading] = useState<boolean>(() =>
+    Boolean(getStoredSession())
+  );
+
+  const [accounts, setAccounts] = useState<UserProfile[]>([]);
   const [allPlatformUsers, setAllPlatformUsers] = useState<UserProfile[]>([]);
   const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
 
@@ -130,15 +87,10 @@ function SafeReachAppShell() {
 
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
-  const [verificationNotice, setVerificationNotice] = useState<string | null>(
-    null
-  );
   const [activeTab, setActiveTab] = useState<ActiveTab>('give_access');
   const [hasChosenMode, setHasChosenMode] = useState(false);
   const [copiedGateId, setCopiedGateId] = useState(false);
   const initialTabSetRef = useRef(false);
-  const pendingSignupRef = useRef<SignupFormData | null>(null);
-  const autoCreatingRef = useRef(false);
 
   const [hasLocationConsent, setHasLocationConsent] = useState(false);
   const [locationModalOpen, setLocationModalOpen] = useState(false);
@@ -148,11 +100,8 @@ function SafeReachAppShell() {
   const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState(false);
 
   const isAdminUser = useMemo(
-    () =>
-      Boolean(
-        firebaseUser?.emailVerified && isAdminEmail(firebaseUser?.email)
-      ),
-    [firebaseUser]
+    () => Boolean(session && isAdminEmail(session.email)),
+    [session]
   );
 
   useEffect(() => {
@@ -176,340 +125,123 @@ function SafeReachAppShell() {
     }
   }, []);
 
-  // Auth listener
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (user) => {
-      setFirebaseUser(user);
-      setAuthReady(true);
-      if (!user) {
-        setOwnedQueryAccounts([]);
-        setLegacyPrimaryAccount(null);
-        setAllPlatformUsers([]);
-        setActiveAccountId(null);
-        setPrivateInfoByUid({});
-        setLiveState(null);
-        setTrips([]);
-        setHistory([]);
-        setAllIncomingLinks([]);
-        setAllOutgoingLinks([]);
-        setAllAlerts([]);
-        setAccountsLoading(false);
-        setHasChosenMode(false);
-        initialTabSetRef.current = false;
-      } else {
-        setAccountsLoading(true);
-      }
-    });
-    return () => unsub();
+  const clearClientWorkspace = useCallback(() => {
+    setAccounts([]);
+    setAllPlatformUsers([]);
+    setActiveAccountId(null);
+    setPrivateInfoByUid({});
+    setLiveState(null);
+    setTrips([]);
+    setHistory([]);
+    setAllIncomingLinks([]);
+    setAllOutgoingLinks([]);
+    setAllAlerts([]);
+    setAccountsLoading(false);
+    setHasChosenMode(false);
+    initialTabSetRef.current = false;
   }, []);
 
-  // Load all SafeReach accounts owned by firebaseUser.uid (plus legacy doc if present)
-  useEffect(() => {
-    if (!authReady || !firebaseUser) return;
+  const refreshWorkspace = useCallback(
+    async (overrideSession?: AuthSession | null, overrideAccountId?: string | null) => {
+      const targetSession = overrideSession ?? session;
+      if (!targetSession) {
+        clearClientWorkspace();
+        return;
+      }
 
-    const uid = firebaseUser.uid;
-    let queryReady = false;
-    let legacyReady = false;
-    const markReady = () => {
-      if (queryReady && legacyReady) {
+      const storedAccount = window.sessionStorage.getItem(
+        getSessionAccountKey(targetSession.ownerUid)
+      );
+      const requestedAccountId =
+        overrideAccountId !== undefined
+          ? overrideAccountId
+          : activeAccountId || storedAccount;
+
+      try {
+        const snap = await fetchWorkspaceSnapshot(
+          targetSession.ownerUid,
+          requestedAccountId,
+          targetSession.email
+        );
+
+        if (snap.accounts.length === 0) {
+          window.sessionStorage.removeItem(
+            getSessionAccountKey(targetSession.ownerUid)
+          );
+          setStoredSession(null);
+          setSession(null);
+          clearClientWorkspace();
+          return;
+        }
+
+        const resolved =
+          (requestedAccountId &&
+            snap.accounts.find((a) => a.uid === requestedAccountId)) ||
+          snap.accounts[0];
+
+        setAccounts(snap.accounts);
+        setPrivateInfoByUid(snap.privateInfoByUid);
+        setLiveState(snap.liveState);
+        setTrips(snap.trips);
+        setHistory(snap.history);
+        setAllIncomingLinks(snap.allIncomingLinks);
+        setAllOutgoingLinks(snap.allOutgoingLinks);
+        setAllAlerts(snap.allAlerts);
+        setAllPlatformUsers(snap.allPlatformUsers);
+
+        if (resolved) {
+          setActiveAccountId(resolved.uid);
+          window.sessionStorage.setItem(
+            getSessionAccountKey(targetSession.ownerUid),
+            resolved.uid
+          );
+
+          if (!initialTabSetRef.current) {
+            if (isAdminEmail(targetSession.email)) {
+              setActiveTab('admin');
+              setHasChosenMode(true);
+            } else if (resolved.rolePreference === 'family') {
+              setActiveTab('track');
+              setHasChosenMode(true);
+            } else if (resolved.rolePreference === 'traveler') {
+              setActiveTab('give_access');
+              setHasChosenMode(true);
+            } else {
+              setActiveTab('give_access');
+              setHasChosenMode(false);
+            }
+            initialTabSetRef.current = true;
+          }
+        }
+      } catch {
+        // Keep current UI state on transient poll failures
+      } finally {
         setAccountsLoading(false);
       }
-    };
+    },
+    [session, activeAccountId, clearClientWorkspace]
+  );
 
-    const unsubQuery = onSnapshot(
-      query(collection(db, 'users'), where('ownerUid', '==', uid)),
-      (snap) => {
-        setOwnedQueryAccounts(snap.docs.map((d) => d.data() as UserProfile));
-        queryReady = true;
-        markReady();
-      },
-      (err) => {
-        queryReady = true;
-        markReady();
-        handleFirestoreError(err, OperationType.LIST, 'users');
-      }
-    );
-
-    const unsubLegacy = onSnapshot(
-      doc(db, 'users', uid),
-      (snap) => {
-        if (snap.exists()) {
-          setLegacyPrimaryAccount(snap.data() as UserProfile);
-        } else {
-          setLegacyPrimaryAccount(null);
-        }
-        legacyReady = true;
-        markReady();
-      },
-      (err) => {
-        legacyReady = true;
-        markReady();
-        handleFirestoreError(err, OperationType.GET, `users/${uid}`);
-      }
-    );
-
-    return () => {
-      unsubQuery();
-      unsubLegacy();
-    };
-  }, [authReady, firebaseUser]);
-
-  // Admin-only full user directory subscription for Admin Portal
+  // Sync workspace snapshot on session/account changes and SSE/poll events
   useEffect(() => {
-    if (!authReady || !firebaseUser || !isAdminUser) {
-      setAllPlatformUsers([]);
+    if (!session) {
+      clearClientWorkspace();
       return;
     }
-
-    const unsubAdmin = onSnapshot(
-      collection(db, 'users'),
-      (snap) => {
-        setAllPlatformUsers(snap.docs.map((d) => d.data() as UserProfile));
-      },
-      (err) => {
-        handleFirestoreError(err, OperationType.LIST, 'users');
-      }
-    );
-
-    return () => unsubAdmin();
-  }, [authReady, firebaseUser, isAdminUser]);
-
-  // Deduplicated list of all accounts owned by this signed-in Google user
-  const accounts = useMemo(() => {
-    const mapById: Record<string, UserProfile> = {};
-    if (legacyPrimaryAccount) {
-      mapById[legacyPrimaryAccount.uid] = legacyPrimaryAccount;
-    }
-    for (const acc of ownedQueryAccounts) {
-      mapById[acc.uid] = acc;
-    }
-    return Object.values(mapById).sort((a, b) => {
-      const aMs = a.createdAt ? a.createdAt.toMillis() : 0;
-      const bMs = b.createdAt ? b.createdAt.toMillis() : 0;
-      return aMs - bMs;
+    void refreshWorkspace(session, activeAccountId);
+    const unsub = subscribeToSafeReachSync(() => {
+      void refreshWorkspace(session, activeAccountId);
     });
-  }, [legacyPrimaryAccount, ownedQueryAccounts]);
-
-  // Select active account for this tab (persisted per-tab in sessionStorage)
-  useEffect(() => {
-    if (!firebaseUser || accounts.length === 0 || autoCreatingRef.current) return;
-
-    const stored = window.sessionStorage.getItem(
-      getSessionAccountKey(firebaseUser.uid)
-    );
-    const chosen =
-      (activeAccountId && accounts.find((a) => a.uid === activeAccountId)) ||
-      (stored && accounts.find((a) => a.uid === stored)) ||
-      accounts[0];
-
-    if (chosen && chosen.uid !== activeAccountId) {
-      setActiveAccountId(chosen.uid);
-      window.sessionStorage.setItem(
-        getSessionAccountKey(firebaseUser.uid),
-        chosen.uid
-      );
-      if (!initialTabSetRef.current) {
-        if (isAdminUser) {
-          setActiveTab('admin');
-          setHasChosenMode(true);
-        } else if (chosen.rolePreference === 'family') {
-          setActiveTab('track');
-          setHasChosenMode(true);
-        } else if (chosen.rolePreference === 'traveler') {
-          setActiveTab('give_access');
-          setHasChosenMode(true);
-        } else {
-          setActiveTab('give_access');
-          setHasChosenMode(false);
-        }
-        initialTabSetRef.current = true;
-      }
-    }
-  }, [firebaseUser, accounts, activeAccountId, isAdminUser]);
+    return () => unsub();
+  }, [session, activeAccountId, refreshWorkspace, clearClientWorkspace]);
 
   const profile = useMemo(
     () => accounts.find((a) => a.uid === activeAccountId) || null,
     [accounts, activeAccountId]
   );
 
-  // Listen to private/info for all owned accounts
-  const accountIdListKey = accounts.map((a) => a.uid).join('|');
-  useEffect(() => {
-    if (!authReady || !firebaseUser || accounts.length === 0) return;
-    const unsubs: Array<() => void> = [];
-
-    for (const acc of accounts) {
-      const unsub = onSnapshot(
-        doc(db, 'users', acc.uid, 'private', 'info'),
-        (snap) => {
-          if (snap.exists()) {
-            setPrivateInfoByUid((prev) => ({
-              ...prev,
-              [acc.uid]: snap.data() as PrivateUserInfo,
-            }));
-          }
-        },
-        (err) => {
-          handleFirestoreError(
-            err,
-            OperationType.GET,
-            `users/${acc.uid}/private/info`
-          );
-        }
-      );
-      unsubs.push(unsub);
-    }
-
-    return () => {
-      unsubs.forEach((u) => u());
-    };
-  }, [authReady, firebaseUser, accountIdListKey]);
-
-  // Listen to liveState, trips, and history for the currently active account
-  useEffect(() => {
-    if (!authReady || !firebaseUser || !activeAccountId) {
-      setLiveState(null);
-      setTrips([]);
-      setHistory([]);
-      return;
-    }
-
-    const ownerUid = firebaseUser.uid;
-    const unsubs: Array<() => void> = [];
-
-    unsubs.push(
-      onSnapshot(
-        doc(db, 'users', activeAccountId, 'live', 'current'),
-        (snap) => {
-          if (snap.exists()) {
-            setLiveState(snap.data() as LiveLocationState);
-          } else {
-            setLiveState(null);
-          }
-        },
-        (err) => {
-          handleFirestoreError(
-            err,
-            OperationType.GET,
-            `users/${activeAccountId}/live/current`
-          );
-        }
-      )
-    );
-
-    unsubs.push(
-      onSnapshot(
-        query(
-          collection(db, 'users', activeAccountId, 'trips'),
-          where('ownerUid', '==', ownerUid)
-        ),
-        (snap) => {
-          const sorted = snap.docs
-            .map((d) => d.data() as Trip)
-            .sort((a, b) => {
-              const aMs = a.startedAt ? a.startedAt.toMillis() : Date.now();
-              const bMs = b.startedAt ? b.startedAt.toMillis() : Date.now();
-              return bMs - aMs;
-            })
-            .slice(0, 25);
-          setTrips(sorted);
-        },
-        (err) => {
-          handleFirestoreError(
-            err,
-            OperationType.LIST,
-            `users/${activeAccountId}/trips`
-          );
-        }
-      )
-    );
-
-    unsubs.push(
-      onSnapshot(
-        query(
-          collection(db, 'users', activeAccountId, 'history'),
-          where('ownerUid', '==', ownerUid)
-        ),
-        (snap) => {
-          const sorted = snap.docs
-            .map((d) => d.data() as LocationHistoryEntry)
-            .sort((a, b) => {
-              const aMs = a.recordedAt ? a.recordedAt.toMillis() : Date.now();
-              const bMs = b.recordedAt ? b.recordedAt.toMillis() : Date.now();
-              return bMs - aMs;
-            })
-            .slice(0, 50);
-          setHistory(sorted);
-        },
-        (err) => {
-          handleFirestoreError(
-            err,
-            OperationType.LIST,
-            `users/${activeAccountId}/history`
-          );
-        }
-      )
-    );
-
-    return () => {
-      unsubs.forEach((u) => u());
-    };
-  }, [authReady, firebaseUser, activeAccountId]);
-
-  // Listen to familyLinks & familyAlerts owned by firebaseUser.uid, filtered per activeAccountId
-  useEffect(() => {
-    if (!authReady || !firebaseUser) return;
-
-    const uid = firebaseUser.uid;
-    const unsubs: Array<() => void> = [];
-
-    unsubs.push(
-      onSnapshot(
-        query(collection(db, 'familyLinks'), where('travelerOwnerUid', '==', uid)),
-        (snap) => {
-          setAllIncomingLinks(snap.docs.map((d) => d.data() as FamilyLink));
-        },
-        (err) => {
-          handleFirestoreError(err, OperationType.LIST, 'familyLinks');
-        }
-      )
-    );
-
-    unsubs.push(
-      onSnapshot(
-        query(collection(db, 'familyLinks'), where('familyOwnerUid', '==', uid)),
-        (snap) => {
-          setAllOutgoingLinks(snap.docs.map((d) => d.data() as FamilyLink));
-        },
-        (err) => {
-          handleFirestoreError(err, OperationType.LIST, 'familyLinks');
-        }
-      )
-    );
-
-    unsubs.push(
-      onSnapshot(
-        query(
-          collection(db, 'familyAlerts'),
-          where('recipientOwnerUid', '==', uid)
-        ),
-        (snap) => {
-          setAllAlerts(snap.docs.map((d) => d.data() as FamilyAlert));
-        },
-        (err) => {
-          handleFirestoreError(err, OperationType.LIST, 'familyAlerts');
-        }
-      )
-    );
-
-    return () => {
-      unsubs.forEach((u) => u());
-    };
-  }, [authReady, firebaseUser]);
-
   const incomingLinks = useMemo(
-    () =>
-      allIncomingLinks.filter((l) => l.travelerUid === activeAccountId),
+    () => allIncomingLinks.filter((l) => l.travelerUid === activeAccountId),
     [allIncomingLinks, activeAccountId]
   );
 
@@ -560,14 +292,30 @@ function SafeReachAppShell() {
   };
 
   const handleEmailLogin = async (email: string, password: string) => {
-    pendingSignupRef.current = null;
     setAuthSubmitting(true);
     setAuthError(null);
     try {
-      await signInWithEmailAndPassword(auth, email.trim(), password);
+      const res = await loginWithEmailPassword(email.trim(), password);
+      const firstAccount = res.accounts[0];
+      if (!firstAccount) {
+        throw new Error('No SafeReach account found. Please sign up first.');
+      }
+      setStoredSession(res.session);
+      setAccountsLoading(true);
+      setSession(res.session);
+      applyPostAccountSelection(
+        res.session.ownerUid,
+        firstAccount.uid,
+        firstAccount.rolePreference,
+        isAdminEmail(res.session.email),
+        true
+      );
+      await refreshWorkspace(res.session, firstAccount.uid);
     } catch (err) {
       setAuthError(
-        formatFirebaseAuthError(err, 'Unable to sign in with email and password.')
+        err instanceof Error
+          ? err.message
+          : 'Unable to log in with username/email and password.'
       );
     } finally {
       setAuthSubmitting(false);
@@ -575,201 +323,73 @@ function SafeReachAppShell() {
   };
 
   const handleEmailSignUp = async (data: EmailSignupFormData) => {
-    pendingSignupRef.current = null;
-    autoCreatingRef.current = true;
     setAuthSubmitting(true);
     setAuthError(null);
-    const trimmedEmail = data.email.trim();
-
     try {
-      let authUser: User;
-      let isFirstAccount = true;
-
-      try {
-        const cred = await createUserWithEmailAndPassword(
-          auth,
-          trimmedEmail,
-          data.password
-        );
-        authUser = cred.user;
-        await updateProfile(authUser, {
-          displayName: data.displayName,
-        }).catch(() => {});
-        await sendEmailVerification(authUser).catch(() => {});
-      } catch (createErr) {
-        const code =
-          createErr && typeof createErr === 'object' && 'code' in createErr
-            ? String((createErr as {code?: unknown}).code || '')
-            : '';
-        if (code !== 'auth/email-already-in-use') {
-          throw createErr;
-        }
-
-        // Duplicate email testing: sign into the existing Auth record with the entered password
-        // and create an additional SafeReach profile with its own 10-character Unique ID.
-        try {
-          const existingCred = await signInWithEmailAndPassword(
-            auth,
-            trimmedEmail,
-            data.password
-          );
-          authUser = existingCred.user;
-          isFirstAccount = false;
-        } catch (signInErr) {
-          const signInCode =
-            signInErr && typeof signInErr === 'object' && 'code' in signInErr
-              ? String((signInErr as {code?: unknown}).code || '')
-              : '';
-          if (
-            signInCode === 'auth/invalid-credential' ||
-            signInCode === 'auth/wrong-password'
-          ) {
-            throw new Error(
-              'This email is already registered. To create another duplicate-email test account under it, enter the same password used for this email (or sign in and use the Accounts tab).'
-            );
-          }
-          throw signInErr;
-        }
-      }
-
-      const adminUser = Boolean(
-        authUser.emailVerified && isAdminEmail(authUser.email)
-      );
-      const targetAccountId = isFirstAccount
-        ? authUser.uid
-        : createAccountId('acct');
-
-      window.sessionStorage.setItem(
-        getSessionAccountKey(authUser.uid),
-        targetAccountId
-      );
-
-      const result = await registerSafeReachProfile({
-        accountId: targetAccountId,
-        ownerUid: authUser.uid,
-        isAdminCaller: adminUser,
+      const res = await signUpWithEmailPassword({
         displayName: data.displayName,
-        email: trimmedEmail,
-        emergencyContactName: '',
+        email: data.email.trim(),
+        password: data.password,
         rolePreference: data.rolePreference,
-        defaultGeofenceRadiusMeters: 300,
       });
-
+      setStoredSession(res.session);
+      setAccountsLoading(true);
+      setSession(res.session);
       applyPostAccountSelection(
-        authUser.uid,
-        result.accountId,
+        res.session.ownerUid,
+        res.accountId,
         data.rolePreference,
-        adminUser,
-        isFirstAccount
+        isAdminEmail(res.session.email),
+        true
       );
+      await refreshWorkspace(res.session, res.accountId);
     } catch (err) {
       setAuthError(
-        formatFirebaseAuthError(err, 'Unable to create your SafeReach account.')
+        err instanceof Error
+          ? err.message
+          : 'Unable to create your SafeReach account.'
       );
     } finally {
-      autoCreatingRef.current = false;
       setAuthSubmitting(false);
     }
   };
 
-  const handleGoogleRegisterWithDetails = async (data?: SignupFormData) => {
-    pendingSignupRef.current = data ?? null;
+  const handleCreateTestAccount = async (data: SignupFormData) => {
+    if (!session) return;
     setAuthSubmitting(true);
     setAuthError(null);
     try {
-      await signInWithPopup(auth, googleProvider);
-      if (!data) {
-        setAuthSubmitting(false);
-      }
-    } catch (err) {
-      pendingSignupRef.current = null;
-      setAuthError(
-        formatFirebaseAuthError(err, 'Unable to register with Google account.')
-      );
-      setAuthSubmitting(false);
-    }
-  };
-
-  const handleCreateAccount = async (
-    data: SignupFormData,
-    isFirstAccount: boolean
-  ) => {
-    if (!firebaseUser) return;
-    autoCreatingRef.current = true;
-    setAuthSubmitting(true);
-    setAuthError(null);
-    try {
-      const adminUser = Boolean(
-        firebaseUser.emailVerified && isAdminEmail(firebaseUser.email)
-      );
-      const targetAccountId = isFirstAccount
-        ? firebaseUser.uid
-        : createAccountId('acct');
-      window.sessionStorage.setItem(
-        getSessionAccountKey(firebaseUser.uid),
-        targetAccountId
-      );
+      const adminUser = isAdminEmail(session.email);
+      const targetAccountId = createAccountId('acct');
       const result = await registerSafeReachProfile({
         accountId: targetAccountId,
-        ownerUid: firebaseUser.uid,
+        ownerUid: session.ownerUid,
         isAdminCaller: adminUser,
         ...data,
-        email: data.email || firebaseUser.email || 'user@safereach.app',
+        email: data.email || session.email,
       });
       applyPostAccountSelection(
-        firebaseUser.uid,
+        session.ownerUid,
         result.accountId,
         data.rolePreference,
         adminUser,
-        isFirstAccount
+        false
       );
+      await refreshWorkspace(session, result.accountId);
     } catch (err) {
       setAuthError(
-        formatFirebaseAuthError(err, 'Failed to create SafeReach account.')
+        err instanceof Error ? err.message : 'Failed to create SafeReach account.'
       );
     } finally {
-      autoCreatingRef.current = false;
       setAuthSubmitting(false);
     }
   };
-
-  // Auto-complete registration right after Google sign-in if the user filled the Sign Up form first
-  useEffect(() => {
-    if (
-      !authReady ||
-      !firebaseUser ||
-      accountsLoading ||
-      !pendingSignupRef.current ||
-      autoCreatingRef.current
-    ) {
-      return;
-    }
-
-    const pending = pendingSignupRef.current;
-    pendingSignupRef.current = null;
-
-    if (accounts.length > 0 && !pending.displayName.trim()) {
-      setAuthSubmitting(false);
-      return;
-    }
-
-    autoCreatingRef.current = true;
-    void handleCreateAccount(
-      {
-        ...pending,
-        email: pending.email || firebaseUser.email || 'user@safereach.app',
-      },
-      accounts.length === 0
-    ).finally(() => {
-      autoCreatingRef.current = false;
-    });
-  }, [authReady, firebaseUser, accountsLoading, accounts.length]);
 
   const handleSelectAccount = (
     accountId: string,
     preferredTab?: 'give_access' | 'track'
   ) => {
-    if (!firebaseUser) return;
+    if (!session) return;
     if (accountId !== activeAccountId) {
       setLiveState(null);
       setTrips([]);
@@ -777,7 +397,7 @@ function SafeReachAppShell() {
     }
     setActiveAccountId(accountId);
     window.sessionStorage.setItem(
-      getSessionAccountKey(firebaseUser.uid),
+      getSessionAccountKey(session.ownerUid),
       accountId
     );
     if (preferredTab) {
@@ -786,70 +406,44 @@ function SafeReachAppShell() {
     }
   };
 
-  const handleSignOut = async () => {
-    setVerificationNotice(null);
-    await signOut(auth);
+  const handleSignOut = () => {
+    if (session) {
+      window.sessionStorage.removeItem(getSessionAccountKey(session.ownerUid));
+    }
+    setStoredSession(null);
+    setSession(null);
+    clearClientWorkspace();
   };
 
   const handleDeleteSingleAccount = async (target: UserProfile) => {
-    if (!firebaseUser) return;
-    await deleteSafeReachAccount(target, firebaseUser.uid, isAdminUser);
+    if (!session) return;
+    await deleteSafeReachAccount(target, session.ownerUid, isAdminUser);
     const remaining = accounts.filter((a) => a.uid !== target.uid);
-    if (remaining.length === 0) {
-      window.sessionStorage.removeItem(getSessionAccountKey(firebaseUser.uid));
-      await handleSignOut();
+    if (remaining.length === 0 && target.ownerUid === session.ownerUid) {
+      handleSignOut();
       return;
     }
-    if (target.uid === activeAccountId) {
+    if (target.uid === activeAccountId && remaining.length > 0) {
       const next = remaining[0];
       setActiveAccountId(next.uid);
       window.sessionStorage.setItem(
-        getSessionAccountKey(firebaseUser.uid),
+        getSessionAccountKey(session.ownerUid),
         next.uid
       );
+      await refreshWorkspace(session, next.uid);
+    } else {
+      await refreshWorkspace(session, activeAccountId);
     }
   };
 
   const handleDeleteAllAccounts = async (targetList: UserProfile[]) => {
-    if (!firebaseUser) return;
+    if (!session) return;
     await deleteMultipleSafeReachAccounts(
       targetList,
-      firebaseUser.uid,
+      session.ownerUid,
       isAdminUser
     );
-    window.sessionStorage.removeItem(getSessionAccountKey(firebaseUser.uid));
-    await handleSignOut();
-  };
-
-  const handleResendAdminVerification = async () => {
-    if (!firebaseUser) return;
-    try {
-      await sendEmailVerification(firebaseUser);
-      setVerificationNotice(
-        'Verification email sent to ' + (firebaseUser.email || ADMIN_EMAIL)
-      );
-    } catch (err) {
-      setVerificationNotice(
-        formatFirebaseAuthError(err, 'Could not send verification email.')
-      );
-    }
-  };
-
-  const handleReloadVerification = async () => {
-    if (!firebaseUser) return;
-    try {
-      await firebaseUser.reload();
-      setFirebaseUser(auth.currentUser);
-      if (auth.currentUser?.emailVerified) {
-        setVerificationNotice(null);
-      } else {
-        setVerificationNotice(
-          'Email is not verified yet. Please click the verification link in your inbox.'
-        );
-      }
-    } catch {
-      setVerificationNotice('Unable to refresh verification status.');
-    }
+    handleSignOut();
   };
 
   const handleAllowLocation = () => {
@@ -930,7 +524,7 @@ function SafeReachAppShell() {
     </div>
   ) : null;
 
-  if (!authReady || (firebaseUser && accountsLoading)) {
+  if (session && accountsLoading) {
     return (
       <div className="min-h-screen bg-[#F8F7F4] flex items-center justify-center p-6">
         <div className="text-center space-y-3">
@@ -945,42 +539,15 @@ function SafeReachAppShell() {
     );
   }
 
-  if (!firebaseUser) {
+  if (!session || !profile) {
     return (
       <>
         {quotaBanner}
         <AuthOnboarding
-          mode="signin"
           isSubmitting={authSubmitting}
           error={authError}
           onEmailLogin={handleEmailLogin}
           onEmailSignUp={handleEmailSignUp}
-          onGoogleRegisterWithDetails={handleGoogleRegisterWithDetails}
-          onCompleteRegistration={(data) => handleCreateAccount(data, true)}
-          onSignOut={() => void handleSignOut()}
-          onClearError={() => setAuthError(null)}
-        />
-      </>
-    );
-  }
-
-  if (!profile) {
-    return (
-      <>
-        {quotaBanner}
-        <AuthOnboarding
-          mode="register"
-          defaultName={firebaseUser.displayName || ''}
-          email={firebaseUser.email || ''}
-          isSubmitting={authSubmitting}
-          error={authError}
-          onEmailLogin={handleEmailLogin}
-          onEmailSignUp={handleEmailSignUp}
-          onGoogleRegisterWithDetails={handleGoogleRegisterWithDetails}
-          onCompleteRegistration={(data) =>
-            handleCreateAccount(data, accounts.length === 0)
-          }
-          onSignOut={() => void handleSignOut()}
           onClearError={() => setAuthError(null)}
         />
       </>
@@ -988,7 +555,7 @@ function SafeReachAppShell() {
   }
 
   const privateInfo = privateInfoByUid[profile.uid] || null;
-  const activeEmail = privateInfo?.email || firebaseUser.email || '';
+  const activeEmail = privateInfo?.email || session.email || '';
   const profileHasActiveSubscription = isUserProfileActive(profile);
   const canUseWorkspace = isAdminUser || profileHasActiveSubscription;
 
@@ -1107,7 +674,7 @@ function SafeReachAppShell() {
           <div className="flex items-center gap-3 shrink-0">
             <button
               type="button"
-              onClick={() => void handleSignOut()}
+              onClick={handleSignOut}
               className="min-h-[40px] px-3.5 py-2 rounded-xl border border-stone-200 hover:bg-stone-100 text-xs font-medium text-stone-700 flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
             >
               <LogOut className="w-3.5 h-3.5" />
@@ -1192,38 +759,6 @@ function SafeReachAppShell() {
             </button>
           </div>
         </div>
-
-        {/* Unverified Admin Email Banner (protects Admin Portal from unverified email spoofing) */}
-        {isAdminEmail(firebaseUser.email) && !firebaseUser.emailVerified && (
-          <div className="max-w-6xl mx-auto p-4 rounded-2xl bg-amber-50 border border-amber-200 text-xs text-amber-950 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="space-y-0.5">
-              <div className="font-semibold">
-                Admin Email Verification Required ({ADMIN_EMAIL})
-              </div>
-              <div className="text-amber-800">
-                Verify your email via the link sent to your inbox (or register
-                with Google) to unlock the Admin Portal.
-                {verificationNotice ? ` ${verificationNotice}` : ''}
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-2 shrink-0">
-              <button
-                type="button"
-                onClick={() => void handleResendAdminVerification()}
-                className="min-h-[36px] px-3 py-1.5 rounded-xl border border-amber-300 bg-white hover:bg-amber-100 text-amber-950 font-medium cursor-pointer"
-              >
-                Resend Verification Email
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleReloadVerification()}
-                className="min-h-[36px] px-3 py-1.5 rounded-xl bg-amber-900 hover:bg-amber-950 text-white font-medium cursor-pointer"
-              >
-                I Verified My Email
-              </button>
-            </div>
-          </div>
-        )}
 
         {/* Admin Simulation Notice if viewing a revoked/pending test profile as Admin */}
         {isAdminUser &&
@@ -1379,7 +914,7 @@ function SafeReachAppShell() {
               <TravelerWorkspace
                 key={profile.uid}
                 profile={profile}
-                authOwnerUid={firebaseUser.uid}
+                authOwnerUid={session.ownerUid}
                 privateInfo={privateInfo}
                 liveState={liveState}
                 activeTrip={activeTrip}
@@ -1393,7 +928,7 @@ function SafeReachAppShell() {
               <FamilyDashboard
                 key={profile.uid}
                 profile={profile}
-                authOwnerUid={firebaseUser.uid}
+                authOwnerUid={session.ownerUid}
                 outgoingLinks={outgoingLinks}
                 alerts={alerts}
               />
@@ -1402,24 +937,22 @@ function SafeReachAppShell() {
             {activeTab === 'accounts' && (
               <div className="space-y-8">
                 <TestAccountsPanel
-                  googleEmail={firebaseUser.email || ''}
+                  googleEmail={session.email}
                   accounts={accounts}
                   activeAccountId={profile.uid}
                   privateInfoByUid={privateInfoByUid}
                   isSubmitting={authSubmitting}
                   error={authError}
                   onSelectAccount={handleSelectAccount}
-                  onCreateTestAccount={(data) =>
-                    handleCreateAccount(data, false)
-                  }
+                  onCreateTestAccount={handleCreateTestAccount}
                   onDeleteAccount={handleDeleteSingleAccount}
                   onDeleteAllAccounts={() => handleDeleteAllAccounts(accounts)}
                 />
                 <TrustedCirclePanel
                   key={profile.uid}
                   profile={profile}
-                  authOwnerUid={firebaseUser.uid}
-                  authEmail={firebaseUser.email || ''}
+                  authOwnerUid={session.ownerUid}
+                  authEmail={session.email}
                   privateInfo={privateInfo}
                   incomingLinks={incomingLinks}
                 />

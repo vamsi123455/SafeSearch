@@ -1,5 +1,4 @@
-import React, {useEffect, useMemo, useState} from 'react';
-import {doc, onSnapshot} from 'firebase/firestore';
+import React, {useCallback, useEffect, useMemo, useState} from 'react';
 import {
   AlertTriangle,
   Bell,
@@ -10,17 +9,18 @@ import {
   ShieldAlert,
   UserPlus,
 } from 'lucide-react';
-import {db, handleFirestoreError, OperationType} from '../../lib/firebase';
 import {
   formatDistance,
   formatRelativeAge,
   formatTimeShort,
 } from '../../lib/geofence';
 import {
+  fetchApprovedTravelerLive,
   lookupDirectoryBySafeReachId,
   markAlertRead,
   removeFamilyLink,
   sendFamilyLinkRequest,
+  subscribeToSafeReachSync,
 } from '../../lib/safereachApi';
 import {
   FamilyAlert,
@@ -92,73 +92,55 @@ export function FamilyDashboard({
     }
   }, [approvedLinks, selectedTravelerUid]);
 
-  // Real-time listeners for approved travelers' live/current document
-  useEffect(() => {
-    const unsubs: Array<() => void> = [];
-
-    for (const link of approvedLinks) {
-      const path = `users/${link.travelerUid}/live/current`;
-      const unsub = onSnapshot(
-        doc(db, 'users', link.travelerUid, 'live', 'current'),
-        (snap) => {
-          if (snap.exists()) {
-            const data = snap.data() as LiveLocationState;
-            setLiveMapByUid((prev) => ({...prev, [link.travelerUid]: data}));
-          }
-        },
-        (err) => {
-          handleFirestoreError(err, OperationType.GET, path);
-        }
-      );
-      unsubs.push(unsub);
+  const refreshApprovedTravelers = useCallback(async () => {
+    if (approvedLinks.length === 0) {
+      setLiveMapByUid({});
+      setTripByUid({});
+      return;
     }
 
-    return () => {
-      unsubs.forEach((u) => u());
-    };
-  }, [approvedLinks]);
+    const entries = await Promise.all(
+      approvedLinks.map(async (link) => {
+        try {
+          const res = await fetchApprovedTravelerLive(
+            link.travelerUid,
+            profile.uid
+          );
+          return [link.travelerUid, res] as const;
+        } catch {
+          return [link.travelerUid, null] as const;
+        }
+      })
+    );
 
-  // Listen to each approved traveler's activeTripId
-  const activeTripKey = approvedLinks
-    .map(
-      (l) =>
-        `${l.travelerUid}:${liveMapByUid[l.travelerUid]?.activeTripId || ''}`
-    )
-    .join('|');
-
-  useEffect(() => {
-    const unsubs: Array<() => void> = [];
-
-    for (const link of approvedLinks) {
-      const live = liveMapByUid[link.travelerUid];
-      const tripId = live?.activeTripId;
-      if (!tripId) {
-        setTripByUid((prev) => ({...prev, [link.travelerUid]: null}));
-        continue;
+    setLiveMapByUid((prev) => {
+      const next: Record<string, LiveLocationState> = {};
+      for (const [uid, res] of entries) {
+        if (res?.live) {
+          next[uid] = res.live;
+        } else if (prev[uid]) {
+          next[uid] = prev[uid];
+        }
       }
+      return next;
+    });
 
-      const path = `users/${link.travelerUid}/trips/${tripId}`;
-      const unsub = onSnapshot(
-        doc(db, 'users', link.travelerUid, 'trips', tripId),
-        (snap) => {
-          if (snap.exists()) {
-            setTripByUid((prev) => ({
-              ...prev,
-              [link.travelerUid]: snap.data() as Trip,
-            }));
-          }
-        },
-        (err) => {
-          handleFirestoreError(err, OperationType.GET, path);
-        }
-      );
-      unsubs.push(unsub);
-    }
+    setTripByUid(() => {
+      const next: Record<string, Trip | null> = {};
+      for (const [uid, res] of entries) {
+        next[uid] = res?.activeTrip ?? null;
+      }
+      return next;
+    });
+  }, [approvedLinks, profile.uid]);
 
-    return () => {
-      unsubs.forEach((u) => u());
-    };
-  }, [activeTripKey]);
+  useEffect(() => {
+    void refreshApprovedTravelers();
+    const unsub = subscribeToSafeReachSync(() => {
+      void refreshApprovedTravelers();
+    });
+    return () => unsub();
+  }, [refreshApprovedTravelers]);
 
   const handleRequestLink = async (e: React.FormEvent) => {
     e.preventDefault();

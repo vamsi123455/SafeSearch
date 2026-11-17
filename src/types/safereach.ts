@@ -1,4 +1,19 @@
-import {Timestamp} from 'firebase/firestore';
+export interface SafeReachTimestamp {
+  seconds: number;
+  nanoseconds: number;
+  toMillis(): number;
+  toDate(): Date;
+}
+
+export function createTimestamp(ms: number): SafeReachTimestamp {
+  const safeMs = Number.isFinite(ms) ? ms : Date.now();
+  return {
+    seconds: Math.floor(safeMs / 1000),
+    nanoseconds: (safeMs % 1000) * 1000000,
+    toMillis: () => safeMs,
+    toDate: () => new Date(safeMs),
+  };
+}
 
 export const ADMIN_EMAIL = 'udayphanindravamsikoyya@gmail.com';
 
@@ -67,6 +82,13 @@ export interface LatLngPoint {
   lng: number;
 }
 
+export interface AuthSession {
+  ownerUid: string;
+  email: string;
+  displayName: string;
+  isAdmin: boolean;
+}
+
 export interface UserProfile {
   uid: string;
   ownerUid: string;
@@ -78,8 +100,8 @@ export interface UserProfile {
   subscriptionStatus?: SubscriptionStatus;
   accessGranted?: boolean;
   subscriptionNote?: string;
-  createdAt?: Timestamp;
-  updatedAt?: Timestamp;
+  createdAt?: SafeReachTimestamp;
+  updatedAt?: SafeReachTimestamp;
 }
 
 export function isUserProfileActive(profile: UserProfile | null): boolean {
@@ -95,7 +117,7 @@ export interface PrivateUserInfo {
   email: string;
   emergencyContactName: string;
   defaultGeofenceRadiusMeters: number;
-  updatedAt?: Timestamp;
+  updatedAt?: SafeReachTimestamp;
 }
 
 export interface DirectoryEntry {
@@ -103,7 +125,7 @@ export interface DirectoryEntry {
   uid: string;
   ownerUid: string;
   displayName: string;
-  createdAt?: Timestamp;
+  createdAt?: SafeReachTimestamp;
 }
 
 export interface FamilyLink {
@@ -117,8 +139,8 @@ export interface FamilyLink {
   familyName: string;
   relationship: string;
   status: LinkStatus;
-  createdAt?: Timestamp;
-  updatedAt?: Timestamp;
+  createdAt?: SafeReachTimestamp;
+  updatedAt?: SafeReachTimestamp;
 }
 
 export interface LiveLocationState {
@@ -137,7 +159,7 @@ export interface LiveLocationState {
   geofenceRadiusMeters: number;
   distanceToDestinationMeters: number;
   routeDeviationMeters: number;
-  updatedAt?: Timestamp;
+  updatedAt?: SafeReachTimestamp;
 }
 
 export interface Trip {
@@ -157,8 +179,8 @@ export interface Trip {
   status: TripStatus;
   maxDeviationMeters: number;
   arrivedAtMs: number;
-  startedAt?: Timestamp;
-  updatedAt?: Timestamp;
+  startedAt?: SafeReachTimestamp;
+  updatedAt?: SafeReachTimestamp;
 }
 
 export interface LocationHistoryEntry {
@@ -170,7 +192,7 @@ export interface LocationHistoryEntry {
   lng: number;
   locationLabel: string;
   status: JourneyStatus;
-  recordedAt?: Timestamp;
+  recordedAt?: SafeReachTimestamp;
 }
 
 export interface FamilyAlert {
@@ -186,5 +208,5 @@ export interface FamilyAlert {
   lat: number;
   lng: number;
   isRead: boolean;
-  createdAt?: Timestamp;
+  createdAt?: SafeReachTimestamp;
 }
