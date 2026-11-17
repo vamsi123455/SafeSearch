@@ -651,6 +651,21 @@
         "isRead",
         "createdAt"
       ]
+    },
+    "GlobalSettings": {
+      "title": "GlobalSettings",
+      "description": "Admin-controlled global platform access switch granting or restricting application access.",
+      "type": "object",
+      "properties": {
+        "allowAllUsers": {
+          "type": "boolean"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["allowAllUsers", "updatedAt"]
     }
   },
   "firestore": {
@@ -689,6 +704,10 @@
     "/familyAlerts/{alertId}": {
       "schema": "FamilyAlert",
       "description": "Real-time arrival, route deviation, and SOS notifications for approved family members."
+    },
+    "/settings/{docId}": {
+      "schema": "GlobalSettings",
+      "description": "Global Admin-controlled access settings (All Users Access ON/OFF)."
     }
   }
 }

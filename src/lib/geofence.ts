@@ -146,6 +146,28 @@ export function decodePolyline(encoded: string): LatLngPoint[] {
   return points;
 }
 
+export function densifyPolyline(
+  points: LatLngPoint[],
+  maxSegmentMeters = 20
+): LatLngPoint[] {
+  if (points.length < 2) return points;
+  const result: LatLngPoint[] = [points[0]];
+  for (let i = 0; i < points.length - 1; i++) {
+    const start = points[i];
+    const end = points[i + 1];
+    const dist = haversineDistanceMeters(start, end);
+    const steps = Math.max(1, Math.ceil(dist / maxSegmentMeters));
+    for (let s = 1; s <= steps; s++) {
+      const t = s / steps;
+      result.push({
+        lat: start.lat + (end.lat - start.lat) * t,
+        lng: start.lng + (end.lng - start.lng) * t,
+      });
+    }
+  }
+  return result;
+}
+
 export function formatDistance(meters: number): string {
   if (!Number.isFinite(meters) || meters < 0) return '0 m';
   if (meters < 1000) {
@@ -159,13 +181,27 @@ export function formatTimeShort(date: Date | null | undefined): string {
   return date.toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'});
 }
 
-export function formatRelativeAge(date: Date | null | undefined): string {
+export function formatTimeWithSeconds(date: Date | null | undefined): string {
   if (!date) return 'Just now';
-  const diffSec = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
-  if (diffSec < 45) return 'Just now';
+  return date.toLocaleTimeString([], {
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+export function formatRelativeAge(
+  date: Date | null | undefined,
+  nowMs = Date.now()
+): string {
+  if (!date) return 'Just now';
+  const diffSec = Math.max(0, Math.floor((nowMs - date.getTime()) / 1000));
+  if (diffSec <= 1) return 'Just now';
+  if (diffSec < 60) return `${diffSec}s ago`;
   const mins = Math.floor(diffSec / 60);
   if (mins < 60) return `${mins}m ago`;
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `${hrs}h ago`;
   return date.toLocaleDateString([], {month: 'short', day: 'numeric'});
 }
+

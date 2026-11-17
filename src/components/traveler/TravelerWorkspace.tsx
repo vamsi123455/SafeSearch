@@ -1,5 +1,4 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {useMapsLibrary} from '@vis.gl/react-google-maps';
 import {
   AlertTriangle,
   Check,
@@ -17,11 +16,12 @@ import {
 } from 'lucide-react';
 import {
   decodePolyline,
+  densifyPolyline,
   distanceToPolylineMeters,
   encodePolyline,
   formatDistance,
   formatRelativeAge,
-  formatTimeShort,
+  formatTimeWithSeconds,
   haversineDistanceMeters,
 } from '../../lib/geofence';
 import {
@@ -63,15 +63,6 @@ interface TravelerWorkspaceProps {
 
 const DEFAULT_ORIGIN: LatLngPoint = {lat: 13.6288, lng: 79.4192};
 
-function isQuotaMessage(err: unknown): boolean {
-  const msg = String(err instanceof Error ? err.message : err);
-  return (
-    msg.includes('RESOURCE_EXHAUSTED') ||
-    msg.includes('OVER_QUERY_LIMIT') ||
-    msg.includes('429')
-  );
-}
-
 export function TravelerWorkspace({
   profile,
   authOwnerUid,
@@ -82,8 +73,6 @@ export function TravelerWorkspace({
   hasLocationConsent,
   onRequestLocationConsent,
 }: TravelerWorkspaceProps) {
-  const placesLib = useMapsLibrary('places');
-  const routesLib = useMapsLibrary('routes');
   const effectiveOwnerUid = profile.ownerUid || authOwnerUid;
 
   const [currentPoint, setCurrentPoint] = useState<LatLngPoint>(() =>
@@ -210,12 +199,9 @@ export function TravelerWorkspace({
     }
   }, [activeTrip?.id, activeTrip?.status]);
 
-  // Reverse-lookup human-readable landmark label via Places API (New) SearchNearby (throttled)
+  // Reverse-lookup human-readable landmark label via free OpenStreetMap Nominatim proxy (throttled)
   const resolveNearbyLabel = useCallback(
     async (pt: LatLngPoint): Promise<string> => {
-      if (!placesLib) {
-        return `Near ${pt.lat.toFixed(4)}, ${pt.lng.toFixed(4)}`;
-      }
       const now = Date.now();
       if (
         lastGeocodePointRef.current &&
@@ -228,79 +214,71 @@ export function TravelerWorkspace({
       try {
         lastGeocodePointRef.current = pt;
         lastGeocodeTimeRef.current = now;
-        const {Place, SearchNearbyRankPreference} = placesLib;
-        const {places} = await Place.searchNearby({
-          fields: ['displayName', 'formattedAddress'],
-          locationRestriction: {center: pt, radius: 350},
-          maxResultCount: 1,
-          rankPreference: SearchNearbyRankPreference.DISTANCE,
-        });
-        if (places && places.length > 0 && places[0].displayName) {
-          return `Near ${places[0].displayName}`;
+        const res = await fetch(
+          `/api/places/reverse?lat=${encodeURIComponent(pt.lat)}&lng=${encodeURIComponent(pt.lng)}`
+        );
+        if (res.ok) {
+          const data = (await res.json()) as {label?: string};
+          if (data.label) {
+            return data.label;
+          }
         }
-      } catch (err) {
-        if (isQuotaMessage(err)) {
-          window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-        }
+      } catch {
+        // Fallback to coordinate label below
       }
       return `${pt.lat.toFixed(4)}, ${pt.lng.toFixed(4)}`;
     },
-    [placesLib, currentLabel]
+    [currentLabel]
   );
 
   // Compute expected route whenever origin/destination/mode changes while planning
   useEffect(() => {
-    if (!routesLib || !destPoint || activeTrip?.status === 'travelling') return;
+    if (!destPoint || activeTrip?.status === 'travelling') return;
 
     let cancelled = false;
     const computePreviewRoute = async () => {
       try {
-        const sdkMode =
-          routesLib.TravelMode[
-            travelMode as keyof typeof routesLib.TravelMode
-          ] || routesLib.TravelMode.DRIVING;
-        const response = await routesLib.Route.computeRoutes({
-          origin: currentPoint,
-          destination: destPoint,
-          travelMode: sdkMode,
-          fields: ['path', 'distanceMeters', 'durationMillis'],
+        const res = await fetch('/api/routes/compute', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            origin: currentPoint,
+            destination: destPoint,
+            travelMode,
+          }),
         });
 
         if (cancelled) return;
-        const primary = response?.routes?.[0];
-        if (!primary) return;
+        const data = (await res.json()) as {
+          encodedPolyline?: string;
+          distanceMeters?: number;
+          durationMins?: number;
+        };
 
-        const pts: LatLngPoint[] = (primary.path || []).map((p) => ({
-          lat: p.lat,
-          lng: p.lng,
-        }));
-        if (pts.length >= 2) {
-          setExpectedPolyline(encodePolyline(pts));
+        if (data.encodedPolyline) {
+          setExpectedPolyline(data.encodedPolyline);
         } else {
           setExpectedPolyline(encodePolyline([currentPoint, destPoint]));
         }
 
+        const fallbackDist = haversineDistanceMeters(currentPoint, destPoint);
         setRouteEstimate({
           distanceMeters:
-            primary.distanceMeters ??
-            haversineDistanceMeters(currentPoint, destPoint),
-          durationMins: Math.max(
-            1,
-            Math.round((primary.durationMillis ?? 300000) / 60000)
-          ),
+            data.distanceMeters && data.distanceMeters > 0
+              ? data.distanceMeters
+              : fallbackDist,
+          durationMins:
+            data.durationMins && data.durationMins > 0
+              ? data.durationMins
+              : Math.max(1, Math.round(fallbackDist / 400)),
         });
-      } catch (err) {
-        if (isQuotaMessage(err)) {
-          window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-        }
+      } catch {
         if (!cancelled) {
+          const fallbackDist = haversineDistanceMeters(currentPoint, destPoint);
           setExpectedPolyline(encodePolyline([currentPoint, destPoint]));
           setRouteEstimate({
-            distanceMeters: haversineDistanceMeters(currentPoint, destPoint),
-            durationMins: Math.max(
-              1,
-              Math.round(haversineDistanceMeters(currentPoint, destPoint) / 400)
-            ),
+            distanceMeters: fallbackDist,
+            durationMins: Math.max(1, Math.round(fallbackDist / 400)),
           });
         }
       }
@@ -310,13 +288,7 @@ export function TravelerWorkspace({
     return () => {
       cancelled = true;
     };
-  }, [
-    routesLib,
-    destPoint?.lat,
-    destPoint?.lng,
-    travelMode,
-    activeTrip?.status,
-  ]);
+  }, [destPoint?.lat, destPoint?.lng, travelMode, activeTrip?.status]);
 
   // Core telemetry processor: updates distance, checks geofence safe arrival & route deviation
   const processLocationUpdate = useCallback(
@@ -331,7 +303,7 @@ export function TravelerWorkspace({
       setAccuracyMeters(accuracy);
 
       const now = Date.now();
-      if (!forceSync && now - lastDbSyncTimeRef.current < 4000) {
+      if (!forceSync && now - lastDbSyncTimeRef.current < 950) {
         return;
       }
       lastDbSyncTimeRef.current = now;
@@ -363,8 +335,8 @@ export function TravelerWorkspace({
         distToDest = haversineDistanceMeters(pt, dest);
 
         const lastTrail = trailRef.current[trailRef.current.length - 1];
-        if (!lastTrail || haversineDistanceMeters(lastTrail, pt) >= 15) {
-          trailRef.current = [...trailRef.current.slice(-120), pt];
+        if (!lastTrail || haversineDistanceMeters(lastTrail, pt) >= 3) {
+          trailRef.current = [...trailRef.current.slice(-160), pt];
         }
 
         const plannedPath = decodePolyline(activeTrip.expectedEncodedPolyline);
@@ -500,21 +472,64 @@ export function TravelerWorkspace({
           );
         }
       },
-      {enableHighAccuracy: true, maximumAge: 10000, timeout: 15000}
+      {enableHighAccuracy: true, maximumAge: 0, timeout: 10000}
     );
 
     return () => navigator.geolocation.clearWatch(watchId);
   }, [hasLocationConsent, simAutoPlaying, processLocationUpdate]);
 
-  // Journey Simulator playback timer
+  // 1-second active GPS poll heartbeat while sharing live location
+  useEffect(() => {
+    if (
+      !hasLocationConsent ||
+      !navigator.geolocation ||
+      !profile.isSharingEnabled ||
+      simAutoPlaying
+    ) {
+      return;
+    }
+
+    let inFlight = false;
+    const pollId = window.setInterval(() => {
+      if (inFlight) return;
+      inFlight = true;
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          inFlight = false;
+          setGpsWarning(null);
+          void processLocationUpdate(
+            {lat: pos.coords.latitude, lng: pos.coords.longitude},
+            pos.coords.accuracy || 15,
+            false
+          );
+        },
+        () => {
+          inFlight = false;
+        },
+        {enableHighAccuracy: true, maximumAge: 0, timeout: 900}
+      );
+    }, 1000);
+
+    return () => window.clearInterval(pollId);
+  }, [
+    hasLocationConsent,
+    profile.isSharingEnabled,
+    simAutoPlaying,
+    processLocationUpdate,
+  ]);
+
+  // Journey Simulator playback timer (1 step per second smoothly along route)
   const simPathPoints = useMemo(() => {
     if (!activeTrip) return [];
     const decoded = decodePolyline(activeTrip.expectedEncodedPolyline);
-    if (decoded.length >= 2) return decoded;
-    return [
-      {lat: activeTrip.originLat, lng: activeTrip.originLng},
-      {lat: activeTrip.destinationLat, lng: activeTrip.destinationLng},
-    ];
+    const basePoints =
+      decoded.length >= 2
+        ? decoded
+        : [
+            {lat: activeTrip.originLat, lng: activeTrip.originLng},
+            {lat: activeTrip.destinationLat, lng: activeTrip.destinationLng},
+          ];
+    return densifyPolyline(basePoints, 18);
   }, [activeTrip]);
 
   useEffect(() => {
@@ -526,13 +541,12 @@ export function TravelerWorkspace({
 
     const interval = window.setInterval(() => {
       setSimStepIndex((prev) => {
-        const stride = Math.max(1, Math.floor(simPathPoints.length / 8));
-        const nextIdx = Math.min(simPathPoints.length - 1, prev + stride);
+        const nextIdx = Math.min(simPathPoints.length - 1, prev + 1);
         const pt = simPathPoints[nextIdx];
         const isLast = nextIdx >= simPathPoints.length - 1;
         void processLocationUpdate(
           pt,
-          12,
+          10,
           true,
           isLast ? activeTrip.destinationName : undefined
         );
@@ -541,7 +555,7 @@ export function TravelerWorkspace({
         }
         return nextIdx;
       });
-    }, 1800);
+    }, 1000);
 
     return () => window.clearInterval(interval);
   }, [simAutoPlaying, simPathPoints, activeTrip, processLocationUpdate]);
@@ -930,7 +944,7 @@ export function TravelerWorkspace({
                       haversineDistanceMeters(currentPoint, destPoint)
                     )
                   : updatedAtDate
-                  ? formatTimeShort(updatedAtDate)
+                  ? formatTimeWithSeconds(updatedAtDate)
                   : 'Ready'}
               </div>
               <div className="text-[11px] text-stone-500 mt-0.5">
@@ -1183,7 +1197,7 @@ export function TravelerWorkspace({
           travelerLabel={`${profile.displayName} (${profile.safeReachId})`}
           travelerStatus={currentStatus}
           travelerUpdatedLabel={
-            updatedAtDate ? formatTimeShort(updatedAtDate) : 'Live'
+            updatedAtDate ? formatTimeWithSeconds(updatedAtDate) : 'Live'
           }
           destinationPosition={destPoint}
           destinationLabel={destName}
@@ -1198,6 +1212,8 @@ export function TravelerWorkspace({
           allowTapToPickDestination={!isActivelyTravelling}
           onMapPickDestination={(pt) => void handleMapPickDestination(pt)}
           focusTrigger={focusTrigger}
+          followTraveler={isActivelyTravelling}
+          defaultMapType="hybrid"
         />
       </div>
 

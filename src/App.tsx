@@ -1,5 +1,4 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {APIProvider} from '@vis.gl/react-google-maps';
 import {
   Check,
   Clock,
@@ -9,32 +8,24 @@ import {
   LogOut,
   Navigation,
   ShieldCheck,
-  UserPlus,
   Users,
 } from 'lucide-react';
 import {AdminPortal} from './components/admin/AdminPortal';
-import {TestAccountsPanel} from './components/accounts/TestAccountsPanel';
-import {
-  AuthOnboarding,
-  EmailSignupFormData,
-  SignupFormData,
-} from './components/auth/AuthOnboarding';
-import {TrustedCirclePanel} from './components/circle/TrustedCirclePanel';
+import {AuthOnboarding} from './components/auth/AuthOnboarding';
 import {ErrorBoundary} from './components/ErrorBoundary';
 import {FamilyDashboard} from './components/family/FamilyDashboard';
 import {LocationHistoryPanel} from './components/history/LocationHistoryPanel';
 import {LocationPermissionModal} from './components/modals/LocationPermissionModal';
 import {TravelerWorkspace} from './components/traveler/TravelerWorkspace';
+import {syncGlobalAccessToFirestore, testConnection} from './lib/firebase';
 import {
-  createAccountId,
+  adminSetGlobalAccess,
   deleteMultipleSafeReachAccounts,
   deleteSafeReachAccount,
   fetchWorkspaceSnapshot,
   getStoredSession,
   loginWithEmailPassword,
-  registerSafeReachProfile,
   setStoredSession,
-  signUpWithEmailPassword,
   subscribeToSafeReachSync,
 } from './lib/safereachApi';
 import {
@@ -52,12 +43,7 @@ import {
   UserProfile,
 } from './types/safereach';
 
-type ActiveTab = 'give_access' | 'track' | 'accounts' | 'history' | 'admin';
-
-const MAPS_API_KEY: string =
-  import.meta.env.VITE_GOOGLE_MAPS_API_KEY ||
-  (typeof process !== 'undefined' && process.env?.GOOGLE_MAPS_API_KEY) ||
-  '';
+type ActiveTab = 'give_access' | 'track' | 'history' | 'admin';
 
 function getSessionAccountKey(ownerUid: string): string {
   return `safereach_active_account_${ownerUid}`;
@@ -73,6 +59,7 @@ function SafeReachAppShell() {
 
   const [accounts, setAccounts] = useState<UserProfile[]>([]);
   const [allPlatformUsers, setAllPlatformUsers] = useState<UserProfile[]>([]);
+  const [allowAllUsers, setAllowAllUsers] = useState(false);
   const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
 
   const [privateInfoByUid, setPrivateInfoByUid] = useState<
@@ -97,7 +84,6 @@ function SafeReachAppShell() {
   const [locationPermError, setLocationPermError] = useState<string | null>(
     null
   );
-  const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState(false);
 
   const isAdminUser = useMemo(
     () => Boolean(session && isAdminEmail(session.email)),
@@ -105,9 +91,7 @@ function SafeReachAppShell() {
   );
 
   useEffect(() => {
-    const handler = () => setMapsQuotaExceeded(true);
-    window.addEventListener('gmp-quota-exceeded', handler);
-    return () => window.removeEventListener('gmp-quota-exceeded', handler);
+    void testConnection();
   }, []);
 
   useEffect(() => {
@@ -128,6 +112,7 @@ function SafeReachAppShell() {
   const clearClientWorkspace = useCallback(() => {
     setAccounts([]);
     setAllPlatformUsers([]);
+    setAllowAllUsers(false);
     setActiveAccountId(null);
     setPrivateInfoByUid({});
     setLiveState(null);
@@ -188,6 +173,7 @@ function SafeReachAppShell() {
         setAllOutgoingLinks(snap.allOutgoingLinks);
         setAllAlerts(snap.allAlerts);
         setAllPlatformUsers(snap.allPlatformUsers);
+        setAllowAllUsers(Boolean(snap.allowAllUsers));
 
         if (resolved) {
           setActiveAccountId(resolved.uid);
@@ -322,89 +308,30 @@ function SafeReachAppShell() {
     }
   };
 
-  const handleEmailSignUp = async (data: EmailSignupFormData) => {
-    setAuthSubmitting(true);
-    setAuthError(null);
-    try {
-      const res = await signUpWithEmailPassword({
-        displayName: data.displayName,
-        email: data.email.trim(),
-        password: data.password,
-        rolePreference: data.rolePreference,
-      });
-      setStoredSession(res.session);
+  const handleSignupCompleted = useCallback(
+    async ({
+      session: newSession,
+      accountId,
+      profile: newProfile,
+    }: {
+      session: AuthSession;
+      accountId: string;
+      profile: UserProfile;
+    }) => {
+      setStoredSession(newSession);
       setAccountsLoading(true);
-      setSession(res.session);
+      setSession(newSession);
       applyPostAccountSelection(
-        res.session.ownerUid,
-        res.accountId,
-        data.rolePreference,
-        isAdminEmail(res.session.email),
+        newSession.ownerUid,
+        accountId,
+        newProfile.rolePreference,
+        isAdminEmail(newSession.email),
         true
       );
-      await refreshWorkspace(res.session, res.accountId);
-    } catch (err) {
-      setAuthError(
-        err instanceof Error
-          ? err.message
-          : 'Unable to create your SafeReach account.'
-      );
-    } finally {
-      setAuthSubmitting(false);
-    }
-  };
-
-  const handleCreateTestAccount = async (data: SignupFormData) => {
-    if (!session) return;
-    setAuthSubmitting(true);
-    setAuthError(null);
-    try {
-      const adminUser = isAdminEmail(session.email);
-      const targetAccountId = createAccountId('acct');
-      const result = await registerSafeReachProfile({
-        accountId: targetAccountId,
-        ownerUid: session.ownerUid,
-        isAdminCaller: adminUser,
-        ...data,
-        email: data.email || session.email,
-      });
-      applyPostAccountSelection(
-        session.ownerUid,
-        result.accountId,
-        data.rolePreference,
-        adminUser,
-        false
-      );
-      await refreshWorkspace(session, result.accountId);
-    } catch (err) {
-      setAuthError(
-        err instanceof Error ? err.message : 'Failed to create SafeReach account.'
-      );
-    } finally {
-      setAuthSubmitting(false);
-    }
-  };
-
-  const handleSelectAccount = (
-    accountId: string,
-    preferredTab?: 'give_access' | 'track'
-  ) => {
-    if (!session) return;
-    if (accountId !== activeAccountId) {
-      setLiveState(null);
-      setTrips([]);
-      setHistory([]);
-    }
-    setActiveAccountId(accountId);
-    window.sessionStorage.setItem(
-      getSessionAccountKey(session.ownerUid),
-      accountId
-    );
-    if (preferredTab) {
-      setActiveTab(preferredTab);
-      setHasChosenMode(true);
-    }
-  };
+      await refreshWorkspace(newSession, accountId);
+    },
+    [refreshWorkspace]
+  );
 
   const handleSignOut = () => {
     if (session) {
@@ -444,6 +371,13 @@ function SafeReachAppShell() {
       isAdminUser
     );
     handleSignOut();
+  };
+
+  const handleToggleGlobalAccess = async (enabled: boolean) => {
+    const res = await adminSetGlobalAccess(enabled);
+    setAllowAllUsers(Boolean(res.allowAllUsers));
+    void syncGlobalAccessToFirestore(Boolean(res.allowAllUsers));
+    await refreshWorkspace(session, activeAccountId);
   };
 
   const handleAllowLocation = () => {
@@ -507,23 +441,6 @@ function SafeReachAppShell() {
     [allPlatformUsers]
   );
 
-  const quotaBanner = mapsQuotaExceeded ? (
-    <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm">
-      <span>
-        Google Maps Platform quota reached. If you are the app owner, visit{' '}
-        <a
-          href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="underline font-semibold text-amber-950 hover:text-amber-800"
-        >
-          maps developer site
-        </a>{' '}
-        for instructions to update your account.
-      </span>
-    </div>
-  ) : null;
-
   if (session && accountsLoading) {
     return (
       <div className="min-h-screen bg-[#F8F7F4] flex items-center justify-center p-6">
@@ -541,23 +458,21 @@ function SafeReachAppShell() {
 
   if (!session || !profile) {
     return (
-      <>
-        {quotaBanner}
-        <AuthOnboarding
-          isSubmitting={authSubmitting}
-          error={authError}
-          onEmailLogin={handleEmailLogin}
-          onEmailSignUp={handleEmailSignUp}
-          onClearError={() => setAuthError(null)}
-        />
-      </>
+      <AuthOnboarding
+        isSubmitting={authSubmitting}
+        error={authError}
+        onEmailLogin={handleEmailLogin}
+        onSignupCompleted={handleSignupCompleted}
+        onClearError={() => setAuthError(null)}
+      />
     );
   }
 
   const privateInfo = privateInfoByUid[profile.uid] || null;
   const activeEmail = privateInfo?.email || session.email || '';
   const profileHasActiveSubscription = isUserProfileActive(profile);
-  const canUseWorkspace = isAdminUser || profileHasActiveSubscription;
+  const canUseWorkspace =
+    isAdminUser || allowAllUsers || profileHasActiveSubscription;
 
   const handleCopyGateId = async () => {
     try {
@@ -594,12 +509,6 @@ function SafeReachAppShell() {
       Icon: Users,
     },
     {
-      id: 'accounts',
-      label: `Accounts (${accounts.length})`,
-      mobileLabel: 'Accounts',
-      Icon: UserPlus,
-    },
-    {
       id: 'history',
       label: 'History',
       mobileLabel: 'History',
@@ -629,7 +538,6 @@ function SafeReachAppShell() {
 
   return (
     <div className="min-h-screen bg-[#F8F7F4] flex flex-col pb-20 lg:pb-8">
-      {quotaBanner}
 
       {/* Top Bar Contract: Zone 1 Brand — Zone 2 Concise Links — Zone 3 Sign Out */}
       <header className="sticky top-0 z-30 bg-white/90 backdrop-blur-md border-b border-stone-200">
@@ -689,37 +597,9 @@ function SafeReachAppShell() {
         {/* Two-Way Mode Selector & Account Bar */}
         <div className="max-w-6xl mx-auto bg-white border border-stone-200 rounded-2xl p-4 sm:px-5 sm:py-3.5 flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2.5 min-w-0">
-            <span className="text-sm font-semibold text-stone-900 truncate">
-              {profile.displayName}
-            </span>
-            <span aria-hidden="true" className="text-stone-300">
-              ·
-            </span>
-            <span className="font-mono-tabular text-xs font-semibold text-teal-800">
-              {profile.safeReachId}
-            </span>
-            <span aria-hidden="true" className="text-stone-300">
-              ·
-            </span>
             <span className="text-xs text-stone-500 truncate">
               {activeEmail}
             </span>
-            {isAdminUser && (
-              <button
-                type="button"
-                onClick={() => setActiveTab('admin')}
-                className="min-h-[34px] px-2.5 py-1 rounded-lg bg-teal-50 border border-teal-200 text-teal-900 text-xs font-semibold whitespace-nowrap cursor-pointer"
-              >
-                Admin Portal
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => setActiveTab('accounts')}
-              className="min-h-[34px] px-2.5 py-1 rounded-lg bg-stone-100 hover:bg-stone-200 text-stone-700 text-xs font-medium whitespace-nowrap cursor-pointer"
-            >
-              Switch / Duplicate-Email Test ({accounts.length})
-            </button>
           </div>
 
           <div
@@ -760,8 +640,9 @@ function SafeReachAppShell() {
           </div>
         </div>
 
-        {/* Admin Simulation Notice if viewing a revoked/pending test profile as Admin */}
+        {/* Admin Simulation Notice if viewing a revoked/pending profile as Admin */}
         {isAdminUser &&
+          !allowAllUsers &&
           !profileHasActiveSubscription &&
           activeTab !== 'admin' && (
             <div className="max-w-6xl mx-auto p-3.5 rounded-2xl bg-amber-50 border border-amber-200 text-xs text-amber-900 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -770,10 +651,9 @@ function SafeReachAppShell() {
                 <strong className="font-mono-tabular">
                   {profile.safeReachId}
                 </strong>{' '}
-                currently has subscription status{' '}
+                currently has access status{' '}
                 <strong>{profile.subscriptionStatus || 'pending'}</strong>.
-                Non-admin users with this status are blocked by the Subscription
-                Gate.
+                Non-admin users with this status wait for Admin approval.
               </span>
               <button
                 type="button"
@@ -785,7 +665,7 @@ function SafeReachAppShell() {
             </div>
           )}
 
-        {/* Subscription & Access Gate for Non-Admin Users */}
+        {/* Access Gate for Non-Admin Users */}
         {isGatedTab ? (
           <div className="max-w-2xl mx-auto bg-white border border-stone-200 rounded-3xl p-6 sm:p-8 space-y-5 shadow-sm">
             <div className="flex items-start gap-3.5">
@@ -795,13 +675,13 @@ function SafeReachAppShell() {
               <div>
                 <h1 className="font-display text-xl font-bold text-stone-900">
                   {profile.subscriptionStatus === 'revoked'
-                    ? 'Subscription Removed by Admin'
-                    : 'Admin Subscription Approval Required'}
+                    ? 'App Access Paused by Admin'
+                    : 'Admin Access Approval Required'}
                 </h1>
                 <p className="text-sm text-stone-600 mt-1 leading-relaxed">
                   {profile.subscriptionStatus === 'revoked'
-                    ? 'Your SafeReach app access was paused or removed by the administrator. Send your Unique ID below to the Admin to restore access.'
-                    : 'All SafeReach access and subscriptions are approved by the Admin using your 10-character Unique ID.'}
+                    ? 'Your SafeReach app access was paused by the administrator. Send your Unique ID below to the Admin to restore access.'
+                    : 'SafeReach access is approved by the Admin using your 10-character Unique ID.'}
                 </p>
               </div>
             </div>
@@ -839,18 +719,11 @@ function SafeReachAppShell() {
               </button>
             </div>
 
-            <div className="text-xs text-stone-600 leading-relaxed border-t border-stone-100 pt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="text-xs text-stone-600 leading-relaxed border-t border-stone-100 pt-4">
               <span>
                 Share this Unique ID with the SafeReach Admin ({ADMIN_EMAIL})
-                to activate your subscription.
+                to enable your access.
               </span>
-              <button
-                type="button"
-                onClick={() => setActiveTab('accounts')}
-                className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-800 font-medium whitespace-nowrap cursor-pointer"
-              >
-                Manage Accounts
-              </button>
             </div>
           </div>
         ) : (
@@ -934,31 +807,6 @@ function SafeReachAppShell() {
               />
             )}
 
-            {activeTab === 'accounts' && (
-              <div className="space-y-8">
-                <TestAccountsPanel
-                  googleEmail={session.email}
-                  accounts={accounts}
-                  activeAccountId={profile.uid}
-                  privateInfoByUid={privateInfoByUid}
-                  isSubmitting={authSubmitting}
-                  error={authError}
-                  onSelectAccount={handleSelectAccount}
-                  onCreateTestAccount={handleCreateTestAccount}
-                  onDeleteAccount={handleDeleteSingleAccount}
-                  onDeleteAllAccounts={() => handleDeleteAllAccounts(accounts)}
-                />
-                <TrustedCirclePanel
-                  key={profile.uid}
-                  profile={profile}
-                  authOwnerUid={session.ownerUid}
-                  authEmail={session.email}
-                  privateInfo={privateInfo}
-                  incomingLinks={incomingLinks}
-                />
-              </div>
-            )}
-
             {activeTab === 'history' && (
               <LocationHistoryPanel
                 key={profile.uid}
@@ -972,6 +820,8 @@ function SafeReachAppShell() {
               <AdminPortal
                 allUsers={allPlatformUsers}
                 activeProfileUid={profile.uid}
+                allowAllUsers={allowAllUsers}
+                onToggleGlobalAccess={handleToggleGlobalAccess}
                 onDeleteAccount={handleDeleteSingleAccount}
                 onDeleteAllAccounts={() =>
                   handleDeleteAllAccounts(allPlatformUsers)
@@ -989,7 +839,7 @@ function SafeReachAppShell() {
       >
         <div
           className={`grid h-15 items-center ${
-            isAdminUser ? 'grid-cols-5' : 'grid-cols-4'
+            isAdminUser ? 'grid-cols-4' : 'grid-cols-3'
           }`}
         >
           {navItems.map((item) => {
@@ -1037,17 +887,7 @@ function SafeReachAppShell() {
 export default function App() {
   return (
     <ErrorBoundary>
-      {MAPS_API_KEY ? (
-        <APIProvider
-          apiKey={MAPS_API_KEY}
-          libraries={['places', 'routes', 'marker', 'geometry']}
-          language="en"
-        >
-          <SafeReachAppShell />
-        </APIProvider>
-      ) : (
-        <SafeReachAppShell />
-      )}
+      <SafeReachAppShell />
     </ErrorBoundary>
   );
 }

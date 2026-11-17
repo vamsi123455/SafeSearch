@@ -23,7 +23,7 @@
   }
 }
 
-/* Ensure Google Maps containers never collapse */
-.gm-style {
+.leaflet-container {
   font-family: var(--font-body) !important;
+  z-index: 1;
 }

@@ -13,6 +13,7 @@ import {
   formatDistance,
   formatRelativeAge,
   formatTimeShort,
+  formatTimeWithSeconds,
 } from '../../lib/geofence';
 import {
   fetchApprovedTravelerLive,
@@ -73,9 +74,9 @@ export function FamilyDashboard({
     [outgoingLinks]
   );
 
-  // Periodic tick to evaluate "Long period without update"
+  // Periodic 1-second tick to keep live relative timestamps accurate second-to-second
   useEffect(() => {
-    const id = window.setInterval(() => setNowMs(Date.now()), 30000);
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, []);
 
@@ -92,55 +93,71 @@ export function FamilyDashboard({
     }
   }, [approvedLinks, selectedTravelerUid]);
 
+  const refreshInFlightRef = React.useRef(false);
+
   const refreshApprovedTravelers = useCallback(async () => {
     if (approvedLinks.length === 0) {
       setLiveMapByUid({});
       setTripByUid({});
       return;
     }
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
 
-    const entries = await Promise.all(
-      approvedLinks.map(async (link) => {
-        try {
-          const res = await fetchApprovedTravelerLive(
-            link.travelerUid,
-            profile.uid
-          );
-          return [link.travelerUid, res] as const;
-        } catch {
-          return [link.travelerUid, null] as const;
+    try {
+      const entries = await Promise.all(
+        approvedLinks.map(async (link) => {
+          try {
+            const res = await fetchApprovedTravelerLive(
+              link.travelerUid,
+              profile.uid
+            );
+            return [link.travelerUid, res] as const;
+          } catch {
+            return [link.travelerUid, null] as const;
+          }
+        })
+      );
+
+      setLiveMapByUid((prev) => {
+        const next: Record<string, LiveLocationState> = {};
+        for (const [uid, res] of entries) {
+          if (res?.live) {
+            next[uid] = res.live;
+          } else if (prev[uid]) {
+            next[uid] = prev[uid];
+          }
         }
-      })
-    );
+        return next;
+      });
 
-    setLiveMapByUid((prev) => {
-      const next: Record<string, LiveLocationState> = {};
-      for (const [uid, res] of entries) {
-        if (res?.live) {
-          next[uid] = res.live;
-        } else if (prev[uid]) {
-          next[uid] = prev[uid];
+      setTripByUid(() => {
+        const next: Record<string, Trip | null> = {};
+        for (const [uid, res] of entries) {
+          next[uid] = res?.activeTrip ?? null;
         }
-      }
-      return next;
-    });
-
-    setTripByUid(() => {
-      const next: Record<string, Trip | null> = {};
-      for (const [uid, res] of entries) {
-        next[uid] = res?.activeTrip ?? null;
-      }
-      return next;
-    });
+        return next;
+      });
+    } finally {
+      refreshInFlightRef.current = false;
+    }
   }, [approvedLinks, profile.uid]);
 
   useEffect(() => {
     void refreshApprovedTravelers();
     const unsub = subscribeToSafeReachSync(() => {
       void refreshApprovedTravelers();
-    });
-    return () => unsub();
-  }, [refreshApprovedTravelers]);
+    }, 1000);
+    const liveTickId = window.setInterval(() => {
+      if (approvedLinks.length > 0) {
+        void refreshApprovedTravelers();
+      }
+    }, 1000);
+    return () => {
+      unsub();
+      window.clearInterval(liveTickId);
+    };
+  }, [refreshApprovedTravelers, approvedLinks.length]);
 
   const handleRequestLink = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -452,9 +469,9 @@ export function FamilyDashboard({
                         <span>
                           Last Updated:{' '}
                           {updatedDate
-                            ? `${formatTimeShort(
+                            ? `${formatTimeWithSeconds(
                                 updatedDate
-                              )} (${formatRelativeAge(updatedDate)})`
+                              )} (${formatRelativeAge(updatedDate, nowMs)})`
                             : 'Waiting'}
                         </span>
                       </div>
@@ -478,7 +495,7 @@ export function FamilyDashboard({
           </div>
         </div>
 
-        {/* Right Column: Live Family Map */}
+        {/* Right Column: Live Family Map (Satellite Form + 1-Second Live Tracking) */}
         <div className="lg:col-span-7 h-[420px] lg:h-[640px]">
           {selectedLink && selectedPosition ? (
             <SafeReachMap
@@ -488,7 +505,7 @@ export function FamilyDashboard({
               travelerStatus={selectedEffectiveStatus}
               travelerUpdatedLabel={
                 selectedLive?.updatedAt
-                  ? formatTimeShort(selectedLive.updatedAt.toDate())
+                  ? formatTimeWithSeconds(selectedLive.updatedAt.toDate())
                   : undefined
               }
               destinationPosition={selectedDestPosition}
@@ -500,6 +517,8 @@ export function FamilyDashboard({
               actualEncodedPolyline={selectedTrip?.actualEncodedPolyline || ''}
               allowTapToPickDestination={false}
               focusTrigger={focusTrigger}
+              followTraveler={true}
+              defaultMapType="hybrid"
             />
           ) : (
             <div className="w-full h-full min-h-[340px] bg-white border border-stone-200 rounded-2xl flex flex-col items-center justify-center p-8 text-center">

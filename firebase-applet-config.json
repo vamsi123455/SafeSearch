@@ -1,12 +1,12 @@
 {
-  "projectId": "fluid-reflection-7nm9t",
-  "appId": "1:992878372830:web:6d720ef159035dba51df4f",
-  "apiKey": "AIzaSyBtQULNE1N1P83SrH8nWZL2ZU9S27Ed5ns",
-  "authDomain": "fluid-reflection-7nm9t.firebaseapp.com",
+  "projectId": "project-dcef6b28-d4f0-441e-944",
+  "appId": "1:143309340629:web:937f3ddb4fd4979df0475c",
+  "apiKey": "AIzaSyCXizblz7zU65HWISSD8n-iyPlVn7RHVdI",
+  "authDomain": "project-dcef6b28-d4f0-441e-944.firebaseapp.com",
   "firestoreDatabaseId": "ai-studio-2d092251-3f4d-4abc-81d1-2fb4010e52a7",
-  "storageBucket": "fluid-reflection-7nm9t.firebasestorage.app",
-  "messagingSenderId": "992878372830",
+  "storageBucket": "project-dcef6b28-d4f0-441e-944.firebasestorage.app",
+  "messagingSenderId": "143309340629",
   "measurementId": "",
-  "oAuthClientId": "992878372830-jfameb66rp31h4ghb113gtadnn44bb8o.apps.googleusercontent.com",
+  "oAuthClientId": "143309340629-aiv8jp27280i2n6dj7dhni0de7ju7nic.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }

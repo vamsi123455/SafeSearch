@@ -17,7 +17,6 @@ import {
   adminUpdateUserAccessAndProfile,
 } from '../../lib/safereachApi';
 import {
-  ADMIN_EMAIL,
   isUserProfileActive,
   RolePreference,
   SAFE_REACH_LIMITS,
@@ -28,6 +27,8 @@ import {
 interface AdminPortalProps {
   allUsers: UserProfile[];
   activeProfileUid: string | null;
+  allowAllUsers: boolean;
+  onToggleGlobalAccess: (enabled: boolean) => Promise<void>;
   onDeleteAccount: (user: UserProfile) => Promise<void>;
   onDeleteAllAccounts: () => Promise<void>;
 }
@@ -37,6 +38,8 @@ type StatusFilter = 'all' | 'pending' | 'active' | 'revoked';
 export function AdminPortal({
   allUsers,
   activeProfileUid,
+  allowAllUsers,
+  onToggleGlobalAccess,
   onDeleteAccount,
   onDeleteAllAccounts,
 }: AdminPortalProps) {
@@ -63,6 +66,7 @@ export function AdminPortal({
   const [rowBusyUid, setRowBusyUid] = useState<string | null>(null);
   const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
   const [deletingAll, setDeletingAll] = useState(false);
+  const [togglingGlobalAccess, setTogglingGlobalAccess] = useState(false);
 
   const loadIntoEditor = (user: UserProfile) => {
     setSelectedUser(user);
@@ -108,8 +112,8 @@ export function AdminPortal({
     setActionBanner(null);
     const nextStatus: SubscriptionStatus = grant ? 'active' : 'revoked';
     const nextNote = grant
-      ? 'Subscription active — granted by Admin'
-      : 'Subscription removed by Admin';
+      ? 'Access active — granted by Admin'
+      : 'Access removed by Admin';
 
     try {
       await adminUpdateUserAccessAndProfile({
@@ -135,8 +139,8 @@ export function AdminPortal({
       setActionBanner({
         type: 'success',
         text: grant
-          ? `Subscription granted for ${target.displayName} (${target.safeReachId}).`
-          : `Subscription removed for ${target.displayName} (${target.safeReachId}). App access blocked.`,
+          ? `Access granted for ${target.displayName} (${target.safeReachId}).`
+          : `Access removed for ${target.displayName} (${target.safeReachId}). App access blocked.`,
       });
     } catch (err) {
       setActionBanner({
@@ -144,7 +148,7 @@ export function AdminPortal({
         text:
           err instanceof Error
             ? err.message
-            : 'Failed to update subscription status.',
+            : 'Failed to update access status.',
       });
     } finally {
       setRowBusyUid(null);
@@ -159,9 +163,9 @@ export function AdminPortal({
 
     const grant = editSubStatus === 'active';
     const fallbackNote = grant
-      ? 'Subscription active — granted by Admin'
+      ? 'Access active — granted by Admin'
       : editSubStatus === 'revoked'
-      ? 'Subscription removed by Admin'
+      ? 'Access removed by Admin'
       : 'Awaiting admin approval';
 
     try {
@@ -185,7 +189,7 @@ export function AdminPortal({
       loadIntoEditor(updated);
       setActionBanner({
         type: 'success',
-        text: `Saved modifications & subscription (${editSubStatus}) for ${updated.safeReachId}.`,
+        text: `Saved modifications & access (${editSubStatus}) for ${updated.safeReachId}.`,
       });
     } catch (err) {
       setActionBanner({
@@ -264,10 +268,6 @@ export function AdminPortal({
                 SafeReach Admin Portal
               </h1>
             </div>
-            <p className="text-xs text-stone-600 mt-1">
-              Signed in as Master Admin ({ADMIN_EMAIL}). Grant or remove user
-              subscriptions and manage modifications by 10-character Unique ID.
-            </p>
           </div>
           <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
             {allUsers.length > 0 &&
@@ -318,8 +318,87 @@ export function AdminPortal({
                   </button>
                 </div>
               ))}
-            <div className="text-xs font-medium text-teal-800 bg-teal-50 border border-teal-200 rounded-xl px-3.5 py-2">
-              Full Modification &amp; Subscription Authority Active
+            <div className="flex items-center gap-3 px-3.5 py-2 rounded-xl border border-stone-200 bg-stone-50">
+              <div className="text-left">
+                <div className="text-xs font-semibold text-stone-900">
+                  All Users Access
+                </div>
+                <div className="text-[11px] text-stone-500">
+                  {allowAllUsers ? 'All users enabled' : 'Allowed users only'}
+                </div>
+              </div>
+              <div
+                role="group"
+                aria-label="All Users Access Control"
+                className="inline-flex items-center p-0.5 rounded-lg bg-stone-200/80"
+              >
+                <button
+                  type="button"
+                  disabled={togglingGlobalAccess}
+                  onClick={async () => {
+                    if (allowAllUsers) return;
+                    setTogglingGlobalAccess(true);
+                    setActionBanner(null);
+                    try {
+                      await onToggleGlobalAccess(true);
+                      setActionBanner({
+                        type: 'success',
+                        text: 'All Users Access is ON. All registered users now have access to SafeReach.',
+                      });
+                    } catch (err) {
+                      setActionBanner({
+                        type: 'error',
+                        text:
+                          err instanceof Error
+                            ? err.message
+                            : 'Unable to turn ON access for all users.',
+                      });
+                    } finally {
+                      setTogglingGlobalAccess(false);
+                    }
+                  }}
+                  className={`min-h-[30px] px-3 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer ${
+                    allowAllUsers
+                      ? 'bg-emerald-700 text-white shadow-sm'
+                      : 'text-stone-600 hover:text-stone-900'
+                  }`}
+                >
+                  ON
+                </button>
+                <button
+                  type="button"
+                  disabled={togglingGlobalAccess}
+                  onClick={async () => {
+                    if (!allowAllUsers) return;
+                    setTogglingGlobalAccess(true);
+                    setActionBanner(null);
+                    try {
+                      await onToggleGlobalAccess(false);
+                      setActionBanner({
+                        type: 'success',
+                        text: 'All Users Access is OFF. Access stopped for non-approved users — only allowed users can access SafeReach.',
+                      });
+                    } catch (err) {
+                      setActionBanner({
+                        type: 'error',
+                        text:
+                          err instanceof Error
+                            ? err.message
+                            : 'Unable to turn OFF global access.',
+                      });
+                    } finally {
+                      setTogglingGlobalAccess(false);
+                    }
+                  }}
+                  className={`min-h-[30px] px-3 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer ${
+                    !allowAllUsers
+                      ? 'bg-rose-700 text-white shadow-sm'
+                      : 'text-stone-600 hover:text-stone-900'
+                  }`}
+                >
+                  OFF
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -332,7 +411,7 @@ export function AdminPortal({
             </div>
           </div>
           <div className="p-3 rounded-xl bg-emerald-50/70 border border-emerald-200">
-            <div className="text-xs text-emerald-800">Active Subscriptions</div>
+            <div className="text-xs text-emerald-800">Allowed Users</div>
             <div className="font-mono-tabular text-2xl font-bold text-emerald-900 mt-0.5">
               {stats.active}
             </div>
@@ -382,11 +461,6 @@ export function AdminPortal({
                 Grant or Modify by Unique ID
               </h2>
             </div>
-            <p className="text-xs text-stone-500 leading-relaxed">
-              Enter the user&apos;s exact 10-character case-sensitive Unique ID
-              (capitals, small letters, symbols, and numbers) to grant or
-              remove their subscription.
-            </p>
 
             {lookupError && (
               <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800">
@@ -447,7 +521,7 @@ export function AdminPortal({
                 </span>
               </div>
 
-              {/* Instant One-Click Subscription Actions */}
+              {/* Instant One-Click Access Actions */}
               <div className="grid grid-cols-2 gap-2.5 pt-1">
                 <button
                   type="button"
@@ -458,7 +532,7 @@ export function AdminPortal({
                   className="min-h-[44px] px-3 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
                 >
                   <UserCheck className="w-4 h-4" />
-                  <span>Give Subscription</span>
+                  <span>Grant Access</span>
                 </button>
                 <button
                   type="button"
@@ -469,7 +543,7 @@ export function AdminPortal({
                   className="min-h-[44px] px-3 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
                 >
                   <UserX className="w-4 h-4" />
-                  <span>Remove Subscription</span>
+                  <span>Remove Access</span>
                 </button>
               </div>
 
@@ -525,7 +599,7 @@ export function AdminPortal({
                       htmlFor="admin-edit-sub"
                       className="block text-xs font-medium text-stone-700 mb-1"
                     >
-                      Subscription Decision
+                      Access Decision
                     </label>
                     <select
                       id="admin-edit-sub"
@@ -547,7 +621,7 @@ export function AdminPortal({
                     htmlFor="admin-edit-note"
                     className="block text-xs font-medium text-stone-700 mb-1"
                   >
-                    Admin Subscription Note
+                    Admin Access Note
                   </label>
                   <input
                     id="admin-edit-note"
@@ -555,7 +629,7 @@ export function AdminPortal({
                     maxLength={SAFE_REACH_LIMITS.SUBSCRIPTION_NOTE_MAX}
                     value={editNote}
                     onChange={(e) => setEditNote(e.target.value)}
-                    placeholder="e.g. Monthly plan active"
+                    placeholder="e.g. Verified family member"
                     className="w-full min-h-[42px] px-3 py-2 bg-white border border-stone-300 rounded-xl text-xs text-stone-900 focus:outline-none focus:ring-2 focus:ring-teal-700/25 focus:border-teal-700"
                   />
                 </div>
@@ -572,17 +646,13 @@ export function AdminPortal({
           )}
         </div>
 
-        {/* Right: Live All-Users Queue & Subscription Control List */}
+        {/* Right: Live All-Users Queue & Access Control List */}
         <div className="lg:col-span-7 bg-white border border-stone-200 rounded-2xl p-5 sm:p-6 space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h2 className="font-display text-base font-semibold text-stone-900">
-                Registered Accounts &amp; Subscriptions ({filteredUsers.length})
+                Registered Accounts &amp; Access ({filteredUsers.length})
               </h2>
-              <p className="text-xs text-stone-500 mt-0.5">
-                Every user&apos;s 10-character Unique ID and current access
-                decision.
-              </p>
             </div>
             <div className="relative w-full sm:w-56">
               <Search className="w-3.5 h-3.5 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -653,7 +723,7 @@ export function AdminPortal({
                           }`}
                         >
                           {active
-                            ? 'Subscribed'
+                            ? 'Allowed'
                             : isRevoked
                             ? 'Removed'
                             : 'Pending Approval'}

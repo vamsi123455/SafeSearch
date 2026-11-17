@@ -1,5 +1,4 @@
-import React, {useCallback, useEffect, useRef, useState} from 'react';
-import {useMapsLibrary} from '@vis.gl/react-google-maps';
+import React, {useEffect, useRef, useState} from 'react';
 import {MapPin, Search, X} from 'lucide-react';
 import {LatLngPoint} from '../../types/safereach';
 
@@ -16,32 +15,16 @@ interface DestinationAutocompleteProps {
   biasCenter?: LatLngPoint;
 }
 
-function checkQuotaError(err: unknown) {
-  const msg = String(err instanceof Error ? err.message : err);
-  if (
-    msg.includes('RESOURCE_EXHAUSTED') ||
-    msg.includes('OVER_QUERY_LIMIT') ||
-    msg.includes('429')
-  ) {
-    window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-  }
-}
-
 export function DestinationAutocomplete({
   value,
   onSelect,
   placeholder = 'Search destination (e.g. Home, Bus Stand, Campus)',
   biasCenter,
 }: DestinationAutocompleteProps) {
-  const placesLib = useMapsLibrary('places');
   const [inputValue, setInputValue] = useState(value);
-  const [suggestions, setSuggestions] = useState<
-    google.maps.places.AutocompleteSuggestion[]
-  >([]);
+  const [suggestions, setSuggestions] = useState<SelectedPlaceResult[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
-  const sessionTokenRef =
-    useRef<google.maps.places.AutocompleteSessionToken | null>(null);
   const skipNextFetchRef = useRef(false);
 
   useEffect(() => {
@@ -55,84 +38,52 @@ export function DestinationAutocomplete({
     }
 
     const trimmed = inputValue.trim();
-    if (!placesLib || trimmed.length < 2) {
+    if (trimmed.length < 2) {
       setSuggestions([]);
       setIsLoading(false);
       return;
     }
 
+    const controller = new AbortController();
     const timer = window.setTimeout(async () => {
       try {
-        const {AutocompleteSessionToken, AutocompleteSuggestion} = placesLib;
-        if (!sessionTokenRef.current) {
-          sessionTokenRef.current = new AutocompleteSessionToken();
-        }
-
         setIsLoading(true);
-        const request: google.maps.places.AutocompleteRequest = {
-          input: trimmed,
-          sessionToken: sessionTokenRef.current,
-          ...(biasCenter
-            ? {
-                locationBias: {
-                  center: biasCenter,
-                  radius: 25000,
-                },
-              }
-            : {}),
-        };
-
-        const response =
-          await AutocompleteSuggestion.fetchAutocompleteSuggestions(request);
-        setSuggestions(response?.suggestions ?? []);
+        const params = new URLSearchParams({q: trimmed});
+        if (biasCenter) {
+          params.set('lat', String(biasCenter.lat));
+          params.set('lng', String(biasCenter.lng));
+        }
+        const res = await fetch(
+          `/api/places/autocomplete?${params.toString()}`,
+          {signal: controller.signal}
+        );
+        if (!res.ok) {
+          setSuggestions([]);
+          return;
+        }
+        const data = (await res.json()) as {results?: SelectedPlaceResult[]};
+        setSuggestions(Array.isArray(data.results) ? data.results : []);
         setIsOpen(true);
-      } catch (err) {
-        checkQuotaError(err);
+      } catch {
         setSuggestions([]);
       } finally {
         setIsLoading(false);
       }
-    }, 260);
+    }, 280);
 
-    return () => window.clearTimeout(timer);
-  }, [placesLib, inputValue, biasCenter]);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [inputValue, biasCenter?.lat, biasCenter?.lng]);
 
-  const handleSelectSuggestion = useCallback(
-    async (suggestion: google.maps.places.AutocompleteSuggestion) => {
-      if (!placesLib || !suggestion.placePrediction) return;
-      try {
-        const place = suggestion.placePrediction.toPlace();
-        await place.fetchFields({
-          fields: ['displayName', 'formattedAddress', 'location', 'viewport'],
-        });
-
-        const loc = place.location;
-        if (!loc) return;
-
-        const name =
-          place.displayName ||
-          suggestion.placePrediction.mainText?.text ||
-          suggestion.placePrediction.text.text;
-        const address =
-          place.formattedAddress || suggestion.placePrediction.text.text;
-
-        skipNextFetchRef.current = true;
-        setInputValue(name);
-        setSuggestions([]);
-        setIsOpen(false);
-        sessionTokenRef.current = null;
-
-        onSelect({
-          name,
-          address,
-          location: {lat: loc.lat(), lng: loc.lng()},
-        });
-      } catch (err) {
-        checkQuotaError(err);
-      }
-    },
-    [placesLib, onSelect]
-  );
+  const handleSelectSuggestion = (place: SelectedPlaceResult) => {
+    skipNextFetchRef.current = true;
+    setInputValue(place.name);
+    setSuggestions([]);
+    setIsOpen(false);
+    onSelect(place);
+  };
 
   return (
     <div className="relative w-full">
@@ -161,7 +112,7 @@ export function DestinationAutocomplete({
               setIsOpen(false);
             }}
             aria-label="Clear destination search"
-            className="absolute right-1.5 min-w-[36px] min-h-[36px] flex items-center justify-center text-stone-400 hover:text-stone-700 rounded-lg"
+            className="absolute right-1.5 min-w-[36px] min-h-[36px] flex items-center justify-center text-stone-400 hover:text-stone-700 rounded-lg cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
@@ -169,40 +120,32 @@ export function DestinationAutocomplete({
       </div>
 
       {isOpen && (isLoading || suggestions.length > 0) && (
-        <div className="absolute left-0 right-0 mt-1.5 bg-white border border-stone-200 rounded-xl shadow-lg z-40 max-h-64 overflow-y-auto divide-y divide-stone-100">
+        <div className="absolute left-0 right-0 mt-1.5 bg-white border border-stone-200 rounded-xl shadow-lg z-[500] max-h-64 overflow-y-auto divide-y divide-stone-100">
           {isLoading && suggestions.length === 0 ? (
             <div className="px-4 py-3 text-xs text-stone-500">
               Searching places...
             </div>
           ) : (
-            suggestions.map((item, idx) => {
-              const primary =
-                item.placePrediction?.mainText?.text ||
-                item.placePrediction?.text.text ||
-                'Selected place';
-              const secondary =
-                item.placePrediction?.secondaryText?.text || '';
-              return (
-                <button
-                  key={`${primary}-${idx}`}
-                  type="button"
-                  onClick={() => void handleSelectSuggestion(item)}
-                  className="w-full text-left px-3.5 py-3 min-h-[44px] hover:bg-stone-50 active:bg-stone-100 flex items-start gap-2.5 transition-colors"
-                >
-                  <MapPin className="w-4 h-4 text-teal-700 mt-0.5 shrink-0" />
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium text-stone-900 truncate">
-                      {primary}
-                    </div>
-                    {secondary && (
-                      <div className="text-xs text-stone-500 truncate">
-                        {secondary}
-                      </div>
-                    )}
+            suggestions.map((item, idx) => (
+              <button
+                key={`${item.name}-${idx}`}
+                type="button"
+                onClick={() => handleSelectSuggestion(item)}
+                className="w-full text-left px-3.5 py-3 min-h-[44px] hover:bg-stone-50 active:bg-stone-100 flex items-start gap-2.5 transition-colors cursor-pointer"
+              >
+                <MapPin className="w-4 h-4 text-teal-700 mt-0.5 shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-stone-900 truncate">
+                    {item.name}
                   </div>
-                </button>
-              );
-            })
+                  {item.address && item.address !== item.name && (
+                    <div className="text-xs text-stone-500 truncate">
+                      {item.address}
+                    </div>
+                  )}
+                </div>
+              </button>
+            ))
           )}
         </div>
       )}

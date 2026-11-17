@@ -85,8 +85,13 @@ service cloud.firestore {
       return status in ['pending', 'active', 'revoked'];
     }
 
+    function hasGlobalAccessEnabled() {
+      return exists(/databases/$(database)/documents/settings/global)
+        && get(/databases/$(database)/documents/settings/global).data.allowAllUsers == true;
+    }
+
     function hasActiveSubscription(userId) {
-      return isAdmin() || (
+      return isAdmin() || hasGlobalAccessEnabled() || (
         isValidId(userId)
         && exists(/databases/$(database)/documents/users/$(userId))
         && 'accessGranted' in get(/databases/$(database)/documents/users/$(userId)).data
@@ -320,6 +325,14 @@ service cloud.firestore {
         && data.lng is number && data.lng >= -180 && data.lng <= 180
         && data.isRead is bool
         && data.createdAt is timestamp;
+    }
+
+    function isValidGlobalSettings(data, expectedDocId) {
+      return expectedDocId == 'global'
+        && data.keys().hasAll(['allowAllUsers', 'updatedAt'])
+        && data.keys().hasOnly(['allowAllUsers', 'updatedAt'])
+        && data.allowAllUsers is bool
+        && data.updatedAt is timestamp;
     }
 
     // 1. User Profiles (Admin controls access/subscriptions & modifications; owner reads/lists own)
@@ -686,6 +699,17 @@ service cloud.firestore {
           || existing().recipientUid == request.auth.uid
           || existing().travelerUid == request.auth.uid
         );
+    }
+
+    // 10. Global Platform Settings (All Users Access ON/OFF - Admin write only)
+    match /settings/{docId} {
+      allow get: if isSignedIn() && isValidId(docId) && docId == 'global';
+      allow list: if false;
+      allow create, update: if isAdmin()
+        && isValidId(docId)
+        && isValidGlobalSettings(incoming(), docId)
+        && incoming().updatedAt == request.time;
+      allow delete: if false;
     }
   }
 }

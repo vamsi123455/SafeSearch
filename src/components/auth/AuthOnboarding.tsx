@@ -1,6 +1,24 @@
 import React, {useState} from 'react';
-import {Eye, EyeOff, Navigation, ShieldCheck, Users} from 'lucide-react';
-import {RolePreference, SAFE_REACH_LIMITS} from '../../types/safereach';
+import {
+  Eye,
+  EyeOff,
+  Navigation,
+  RefreshCw,
+  ShieldCheck,
+  Users,
+} from 'lucide-react';
+import {
+  PendingSignupResponse,
+  requestSignupEmailConfirmation,
+  resendSignupConfirmationEmail,
+  verifySignupOtp,
+} from '../../lib/safereachApi';
+import {
+  AuthSession,
+  RolePreference,
+  SAFE_REACH_LIMITS,
+  UserProfile,
+} from '../../types/safereach';
 
 export interface SignupFormData {
   displayName: string;
@@ -18,7 +36,11 @@ interface AuthOnboardingProps {
   isSubmitting: boolean;
   error: string | null;
   onEmailLogin: (email: string, password: string) => Promise<void>;
-  onEmailSignUp: (data: EmailSignupFormData) => Promise<void>;
+  onSignupCompleted: (params: {
+    session: AuthSession;
+    accountId: string;
+    profile: UserProfile;
+  }) => Promise<void>;
   onClearError?: () => void;
 }
 
@@ -26,7 +48,7 @@ export function AuthOnboarding({
   isSubmitting,
   error,
   onEmailLogin,
-  onEmailSignUp,
+  onSignupCompleted,
   onClearError,
 }: AuthOnboardingProps) {
   const [portalView, setPortalView] = useState<'login' | 'signup'>('login');
@@ -46,6 +68,13 @@ export function AuthOnboarding({
   const [rolePreference, setRolePreference] =
     useState<RolePreference>('traveler');
   const [formError, setFormError] = useState<string | null>(null);
+  const [localBusy, setLocalBusy] = useState(false);
+
+  // Pending Email OTP state
+  const [pendingState, setPendingState] =
+    useState<PendingSignupResponse | null>(null);
+  const [otpInput, setOtpInput] = useState('');
+  const [statusNote, setStatusNote] = useState<string | null>(null);
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -71,6 +100,7 @@ export function AuthOnboarding({
   const handleSignupSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
+    setStatusNote(null);
 
     const trimmedName = displayName
       .trim()
@@ -97,17 +127,93 @@ export function AuthOnboarding({
       return;
     }
 
-    await onEmailSignUp({
-      displayName: trimmedName,
-      email: effectiveEmail,
-      password,
-      emergencyContactName: '',
-      rolePreference,
-      defaultGeofenceRadiusMeters: 300,
-    });
+    setLocalBusy(true);
+    try {
+      const pending = await requestSignupEmailConfirmation({
+        displayName: trimmedName,
+        email: effectiveEmail,
+        password,
+        rolePreference,
+      });
+
+      if (!pending?.pendingId) {
+        throw new Error('Unable to initiate email verification. Please try again.');
+      }
+
+      setOtpInput('');
+      setPendingState({
+        ...pending,
+        email: pending.email || effectiveEmail,
+      });
+    } catch (err) {
+      setFormError(
+        err instanceof Error
+          ? err.message
+          : 'Unable to send OTP to your Gmail inbox.'
+      );
+    } finally {
+      setLocalBusy(false);
+    }
+  };
+
+  const handleVerifyOtpSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pendingState) return;
+    setFormError(null);
+    setStatusNote(null);
+
+    const cleanOtp = otpInput.trim();
+    if (!/^\d{6}$/.test(cleanOtp)) {
+      setFormError('Please enter the 6-digit OTP sent to your email.');
+      return;
+    }
+
+    setLocalBusy(true);
+    try {
+      const res = await verifySignupOtp(pendingState.pendingId, cleanOtp);
+      if (res.completed && res.session && res.accountId && res.profile) {
+        setPendingState(null);
+        await onSignupCompleted({
+          session: res.session,
+          accountId: res.accountId,
+          profile: res.profile,
+        });
+        return;
+      }
+      throw new Error('Unable to complete registration. Please try again.');
+    } catch (err) {
+      setFormError(
+        err instanceof Error ? err.message : 'Unable to verify OTP code.'
+      );
+    } finally {
+      setLocalBusy(false);
+    }
+  };
+
+  const handleResendEmail = async () => {
+    if (!pendingState) return;
+    setFormError(null);
+    setStatusNote(null);
+    setLocalBusy(true);
+    try {
+      const updated = await resendSignupConfirmationEmail(
+        pendingState.pendingId
+      );
+
+      setOtpInput('');
+      setPendingState(updated);
+      setStatusNote(`A fresh 6-digit OTP was sent to ${updated.email}.`);
+    } catch (err) {
+      setFormError(
+        err instanceof Error ? err.message : 'Failed to resend OTP email.'
+      );
+    } finally {
+      setLocalBusy(false);
+    }
   };
 
   const activeError = formError || error;
+  const busy = isSubmitting || localBusy;
 
   return (
     <div className="min-h-screen bg-[#F8F7F4] flex flex-col justify-center items-center px-4 py-8">
@@ -126,46 +232,50 @@ export function AuthOnboarding({
 
         {/* Focused Login / Sign Up Portal Card */}
         <div className="bg-white border border-stone-200 rounded-3xl p-6 sm:p-7 shadow-sm space-y-5">
-          <div
-            role="tablist"
-            aria-label="Login or Sign Up"
-            className="grid grid-cols-2 gap-1 p-1 bg-stone-100 rounded-xl"
-          >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={portalView === 'login'}
-              onClick={() => {
-                setPortalView('login');
-                setFormError(null);
-                onClearError?.();
-              }}
-              className={`min-h-[42px] rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
-                portalView === 'login'
-                  ? 'bg-white text-stone-900 shadow-sm'
-                  : 'text-stone-600 hover:text-stone-900'
-              }`}
+          {!pendingState && (
+            <div
+              role="tablist"
+              aria-label="Login or Sign Up"
+              className="grid grid-cols-2 gap-1 p-1 bg-stone-100 rounded-xl"
             >
-              Login
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={portalView === 'signup'}
-              onClick={() => {
-                setPortalView('signup');
-                setFormError(null);
-                onClearError?.();
-              }}
-              className={`min-h-[42px] rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
-                portalView === 'signup'
-                  ? 'bg-white text-stone-900 shadow-sm'
-                  : 'text-stone-600 hover:text-stone-900'
-              }`}
-            >
-              New User? Sign Up
-            </button>
-          </div>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={portalView === 'login'}
+                onClick={() => {
+                  setPortalView('login');
+                  setFormError(null);
+                  setStatusNote(null);
+                  onClearError?.();
+                }}
+                className={`min-h-[42px] rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                  portalView === 'login'
+                    ? 'bg-white text-stone-900 shadow-sm'
+                    : 'text-stone-600 hover:text-stone-900'
+                }`}
+              >
+                Login
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={portalView === 'signup'}
+                onClick={() => {
+                  setPortalView('signup');
+                  setFormError(null);
+                  setStatusNote(null);
+                  onClearError?.();
+                }}
+                className={`min-h-[42px] rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                  portalView === 'signup'
+                    ? 'bg-white text-stone-900 shadow-sm'
+                    : 'text-stone-600 hover:text-stone-900'
+                }`}
+              >
+                New User? Sign Up
+              </button>
+            </div>
+          )}
 
           {activeError && (
             <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800 leading-relaxed">
@@ -173,7 +283,83 @@ export function AuthOnboarding({
             </div>
           )}
 
-          {portalView === 'login' ? (
+          {statusNote && (
+            <div className="p-3 rounded-xl bg-teal-50 border border-teal-200 text-xs text-teal-900 leading-relaxed">
+              {statusNote}
+            </div>
+          )}
+
+          {pendingState ? (
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <h2 className="font-display text-lg font-bold text-stone-900">
+                  Enter Email OTP
+                </h2>
+                <p className="text-xs text-stone-600 leading-relaxed">
+                  We sent a 6-digit OTP to{' '}
+                  <strong className="text-stone-900">{pendingState.email}</strong>.
+                  Enter it below to complete your registration.
+                </p>
+              </div>
+
+              <form onSubmit={handleVerifyOtpSubmit} className="space-y-3">
+                <div>
+                  <label
+                    htmlFor="signup-otp"
+                    className="block text-xs font-medium text-stone-700 mb-1"
+                  >
+                    6-Digit OTP from Gmail
+                  </label>
+                  <input
+                    id="signup-otp"
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    maxLength={6}
+                    required
+                    value={otpInput}
+                    onChange={(e) =>
+                      setOtpInput(e.target.value.replace(/\D/g, '').slice(0, 6))
+                    }
+                    placeholder="Enter 6-digit OTP"
+                    className="w-full min-h-[46px] px-3.5 py-2 bg-white border border-stone-300 rounded-xl text-base font-mono-tabular tracking-[0.3em] text-center text-stone-900 focus:outline-none focus:ring-2 focus:ring-teal-700/25 focus:border-teal-700"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={busy || otpInput.trim().length !== 6}
+                  className="w-full min-h-[46px] px-4 py-2.5 rounded-xl bg-teal-700 hover:bg-teal-800 disabled:opacity-55 text-white font-semibold text-sm transition-colors cursor-pointer"
+                >
+                  {busy ? 'Verifying...' : 'Verify OTP & Complete Registration'}
+                </button>
+              </form>
+
+              <div className="flex items-center justify-between gap-2 pt-2 border-t border-stone-100">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleResendEmail()}
+                  className="text-xs font-medium text-teal-700 hover:text-teal-800 flex items-center gap-1.5 cursor-pointer py-1"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Resend OTP</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    setPendingState(null);
+                    setOtpInput('');
+                    setFormError(null);
+                    setStatusNote(null);
+                  }}
+                  className="text-xs font-medium text-stone-600 hover:text-stone-900 cursor-pointer py-1"
+                >
+                  Cancel & Edit Details
+                </button>
+              </div>
+            </div>
+          ) : portalView === 'login' ? (
             <form onSubmit={handleLoginSubmit} className="space-y-4">
               <div>
                 <label
@@ -232,10 +418,10 @@ export function AuthOnboarding({
 
               <button
                 type="submit"
-                disabled={isSubmitting}
+                disabled={busy}
                 className="w-full min-h-[48px] px-4 py-3 rounded-xl bg-teal-700 hover:bg-teal-800 disabled:opacity-60 text-white font-semibold text-sm transition-colors cursor-pointer"
               >
-                {isSubmitting ? 'Logging in...' : 'Login'}
+                {busy ? 'Logging in...' : 'Login'}
               </button>
 
               <div className="text-center pt-2 border-t border-stone-100">
@@ -244,6 +430,7 @@ export function AuthOnboarding({
                   onClick={() => {
                     setPortalView('signup');
                     setFormError(null);
+                    setStatusNote(null);
                     onClearError?.();
                   }}
                   className="text-xs font-medium text-teal-700 hover:text-teal-800 cursor-pointer py-1"
@@ -417,10 +604,10 @@ export function AuthOnboarding({
 
               <button
                 type="submit"
-                disabled={isSubmitting}
+                disabled={busy}
                 className="w-full min-h-[48px] px-4 py-3 rounded-xl bg-teal-700 hover:bg-teal-800 disabled:opacity-60 text-white font-semibold text-sm transition-colors cursor-pointer"
               >
-                {isSubmitting ? 'Signing up...' : 'Sign Up'}
+                {busy ? 'Sending OTP to Gmail...' : 'Sign Up'}
               </button>
 
               <div className="text-center pt-1">
@@ -429,6 +616,7 @@ export function AuthOnboarding({
                   onClick={() => {
                     setPortalView('login');
                     setFormError(null);
+                    setStatusNote(null);
                     onClearError?.();
                   }}
                   className="text-xs font-medium text-stone-600 hover:text-stone-900 cursor-pointer py-1"

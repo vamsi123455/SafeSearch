@@ -146,6 +146,16 @@ function hydrateAlert(raw: RawFamilyAlert): FamilyAlert {
   };
 }
 
+export class SafeReachApiError extends Error {
+  status: number;
+  code?: string;
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
 async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...init,
@@ -156,8 +166,12 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
   });
   const text = await res.text();
   let data: Record<string, unknown> = {};
+  let parsedOk = false;
   try {
-    data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+    if (text) {
+      data = JSON.parse(text) as Record<string, unknown>;
+      parsedOk = true;
+    }
   } catch {
     data = {};
   }
@@ -166,7 +180,18 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
       typeof data.error === 'string' && data.error
         ? data.error
         : `Request failed (${res.status})`;
-    throw new Error(msg);
+    const code = typeof data.code === 'string' ? data.code : undefined;
+    throw new SafeReachApiError(msg, res.status, code);
+  }
+  if (!parsedOk) {
+    const isBootHtml =
+      text.includes('Starting Server') || text.trimStart().startsWith('<!');
+    throw new SafeReachApiError(
+      isBootHtml
+        ? 'Server is still starting up. Please wait a few seconds and try again.'
+        : 'Unexpected server response. Please refresh and try again.',
+      res.status
+    );
   }
   return data as T;
 }
@@ -213,31 +238,64 @@ export function buildComplex10CharId(): string {
   return chars.join('');
 }
 
-export async function signUpWithEmailPassword(params: {
+export interface PendingSignupResponse {
+  pendingId: string;
+  email: string;
+  displayName: string;
+  expiresAtMs: number;
+  deliveryMode: 'smtp' | 'relay' | 'brevo' | 'resend';
+}
+
+export interface SignupVerificationResult {
+  completed: boolean;
+  otpVerified: boolean;
+  pendingId?: string;
+  email?: string;
+  displayName?: string;
+  expiresAtMs?: number;
+  session?: AuthSession;
+  accountId?: string;
+  safeReachId?: string;
+  profile?: UserProfile;
+}
+
+export async function requestSignupEmailConfirmation(params: {
   displayName: string;
   email: string;
   password: string;
   rolePreference: RolePreference;
-}): Promise<{
-  session: AuthSession;
-  accountId: string;
-  safeReachId: string;
-  profile: UserProfile;
-}> {
-  const data = await apiFetch<{
-    session: AuthSession;
-    accountId: string;
-    safeReachId: string;
-    profile: RawUserProfile;
-  }>('/api/auth/signup', {
+}): Promise<PendingSignupResponse> {
+  return apiFetch<PendingSignupResponse>('/api/auth/signup/request', {
     method: 'POST',
     body: JSON.stringify(params),
   });
+}
+
+export async function resendSignupConfirmationEmail(
+  pendingId: string
+): Promise<PendingSignupResponse> {
+  return apiFetch<PendingSignupResponse>('/api/auth/signup/resend', {
+    method: 'POST',
+    body: JSON.stringify({pendingId}),
+  });
+}
+
+export async function verifySignupOtp(
+  pendingId: string,
+  otp: string
+): Promise<SignupVerificationResult> {
+  const data = await apiFetch<
+    Omit<SignupVerificationResult, 'profile'> & {profile?: RawUserProfile}
+  >('/api/auth/signup/verify-otp', {
+    method: 'POST',
+    body: JSON.stringify({pendingId, otp}),
+  });
   return {
     ...data,
-    profile: hydrateProfile(data.profile),
+    profile: data.profile ? hydrateProfile(data.profile) : undefined,
   };
 }
+
 
 export async function loginWithEmailPassword(
   email: string,
@@ -257,6 +315,7 @@ export async function loginWithEmailPassword(
 }
 
 export interface WorkspaceSnapshot {
+  allowAllUsers: boolean;
   accounts: UserProfile[];
   privateInfoByUid: Record<string, PrivateUserInfo>;
   liveState: LiveLocationState | null;
@@ -278,6 +337,7 @@ export async function fetchWorkspaceSnapshot(
     email: email || '',
   });
   const raw = await apiFetch<{
+    allowAllUsers?: boolean;
     accounts: RawUserProfile[];
     privateInfoByUid: Record<string, RawPrivateInfo>;
     liveState: RawLiveState | null;
@@ -295,6 +355,7 @@ export async function fetchWorkspaceSnapshot(
   }
 
   return {
+    allowAllUsers: Boolean(raw.allowAllUsers),
     accounts: (raw.accounts || []).map(hydrateProfile),
     privateInfoByUid,
     liveState: raw.liveState ? hydrateLive(raw.liveState) : null,
@@ -322,7 +383,10 @@ export async function fetchApprovedTravelerLive(
   };
 }
 
-export function subscribeToSafeReachSync(onSync: () => void): () => void {
+export function subscribeToSafeReachSync(
+  onSync: () => void,
+  fallbackIntervalMs = 1000
+): () => void {
   let es: EventSource | null = null;
   if (typeof EventSource !== 'undefined') {
     es = new EventSource('/api/stream');
@@ -331,8 +395,10 @@ export function subscribeToSafeReachSync(onSync: () => void): () => void {
     });
   }
   const pollId = window.setInterval(() => {
-    onSync();
-  }, 4000);
+    if (!es || es.readyState !== EventSource.OPEN) {
+      onSync();
+    }
+  }, fallbackIntervalMs);
 
   return () => {
     if (es) {
@@ -341,6 +407,7 @@ export function subscribeToSafeReachSync(onSync: () => void): () => void {
     window.clearInterval(pollId);
   };
 }
+
 
 export async function registerSafeReachProfile(params: {
   accountId?: string;
@@ -437,6 +504,19 @@ export async function adminUpdateUserAccessAndProfile(params: {
       subscriptionStatus: params.subscriptionStatus,
       accessGranted: params.accessGranted,
       subscriptionNote: params.subscriptionNote,
+    }),
+  });
+}
+
+export async function adminSetGlobalAccess(
+  allowAllUsers: boolean
+): Promise<{allowAllUsers: boolean}> {
+  const session = getStoredSession();
+  return apiFetch<{allowAllUsers: boolean}>('/api/admin/global-access', {
+    method: 'POST',
+    body: JSON.stringify({
+      callerEmail: session?.email || '',
+      allowAllUsers,
     }),
   });
 }

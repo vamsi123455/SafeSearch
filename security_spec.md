@@ -22,3 +22,4 @@
 10. **Cross-Owner Users Listing**: Non-admin queries `collection(db, 'users')` without `where('ownerUid', '==', request.auth.uid)` -> `PERMISSION_DENIED`.
 11. **Shadow Ghost Field Injection (Phone Number / Admin Claim)**: Client creates `/users/u2/private/info` with extra `phone: "+91..."` or `/users/u2` with `isAdmin: true` -> `PERMISSION_DENIED`.
 12. **Fake Client Timestamp Spoofing**: Client writes `/users/u2` or `/live/current` with `updatedAt` != `request.time` -> `PERMISSION_DENIED`.
+13. **Non-Admin Global Access Override**: Non-admin user writes `/settings/global` with `allowAllUsers: true` -> `PERMISSION_DENIED`.
